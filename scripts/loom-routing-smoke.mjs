@@ -16,6 +16,8 @@ const freePort = () => new Promise((resolve, reject) => {
 });
 const rootA = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-loom-a-'));
 const rootB = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-loom-b-'));
+const nestedRepo = path.join(rootB, 'services', 'api');
+await fs.mkdir(path.join(nestedRepo, '.git'), { recursive: true });
 const port = await freePort();
 const token = 'agent-loom-routing-smoke-token';
 const child = spawn(process.execPath, ['dist/http.js'], {
@@ -73,6 +75,10 @@ try {
     if (!wsA || !wsB) throw new Error('allowed workspaces were not listed');
     await call(a.client, 'workspace', { action: 'use', workspace_id: wsA.id });
     await call(b.client, 'workspace', { action: 'use', workspace_id: wsB.id });
+    const discovered = await call(b.client, 'workspace', { action: 'discover', root: rootB });
+    if (!discovered.repositories.some(repository => repository.root === nestedRepo)) throw new Error('nested Git repository discovery failed');
+    const openedContainer = await call(b.client, 'workspace', { action: 'open', root: rootB });
+    if (openedContainer.is_git_root || !openedContainer.repositories.some(repository => repository.root === nestedRepo)) throw new Error('non-Git workspace guidance failed');
     const currentA = await call(a.client, 'workspace', { action: 'current' });
     const currentB = await call(b.client, 'workspace', { action: 'current' });
     if (currentA.workspace.root !== rootA || currentB.workspace.root !== rootB) throw new Error('MCP session workspace selections leaked');
@@ -81,9 +87,11 @@ try {
     const read = await call(a.client, 'read', { path: 'chat-a.txt' });
     const bash = await call(a.client, 'bash', { command: 'pwd' });
     const wrapped = await call(a.client, 'loom', { action: 'config' });
+    const unsafePool = await a.client.callTool({ name: 'pi', arguments: { action: 'start', name: 'must-not-bind-default' } });
+    if (!unsafePool.isError || !unsafePool.content?.[0]?.text?.includes('root is required')) throw new Error('pool start silently trusted implicit workspace selection');
     if (edited.replacements !== 1 || edited.loom_tool !== 'edit' || 'codexpro_tool' in edited || !read.text.includes('after') || bash.stdout.trim() !== rootA || bash.exitCode !== 0) throw new Error(`direct ChatGPT edit/bash tools failed: ${JSON.stringify({ edited, read, bash })}`);
     if (wrapped.loom_tool !== 'server_config' || 'codexpro_tool' in wrapped) throw new Error(`Agent Loom supertool card data failed: ${JSON.stringify(wrapped)}`);
-    console.log(JSON.stringify({ tools: requiredTools, chat_a: currentA.workspace.root, chat_b: currentB.workspace.root, same_endpoint: true, direct_edit: true, direct_bash: true }, null, 2));
+    console.log(JSON.stringify({ tools: requiredTools, chat_a: currentA.workspace.root, chat_b: currentB.workspace.root, same_endpoint: true, direct_edit: true, direct_bash: true, repository_discovery: true, explicit_pool_root: true }, null, 2));
   } finally {
     await a.client.close();
     await b.client.close();

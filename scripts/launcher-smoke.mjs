@@ -63,7 +63,7 @@ try {
   }
   const bash = tools.find(tool => tool.name === 'bash');
   if (bash?._meta?.['openai/outputTemplate'] !== 'ui://widget/agent-loom-tool-card-v10.html') throw new Error('launcher tool cards are not enabled');
-  console.log(JSON.stringify({ version: '0.1.1', tool_mode: 'full', write: 'workspace', bash: 'full', transcript: 'full', codex_sessions: 'read', tool_cards: true }, null, 2));
+  console.log(JSON.stringify({ tool_mode: 'full', write: 'workspace', bash: 'full', transcript: 'full', codex_sessions: 'read', tool_cards: true }, null, 2));
 } finally {
   await client?.close().catch(() => {});
   child.kill('SIGTERM');

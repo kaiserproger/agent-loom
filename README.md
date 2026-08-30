@@ -40,7 +40,9 @@ Each HTTP MCP connection has its own selected workspace. Different ChatGPT chats
 {"action":"use","workspace_id":"ws_..."}
 ```
 
-Actions: `list`, `open`, `use`, `current`.
+Actions: `list`, `discover`, `open`, `use`, `current`.
+
+`discover` finds bounded nested Git repositories under aggregate directories. `open` also returns repository candidates when the selected directory is not itself a Git root. Direct file tools can still use that directory, but persistent Pi/Codex pools require a selected Git root because h5i forum and worktree state bind to that repository.
 
 ### `pi` and `codex`
 
@@ -49,7 +51,7 @@ Both tools use the same contract:
 ```json
 {
   "action": "start",
-  "workspace_id": "ws_...",
+  "root": "/absolute/path/to/project-git-root",
   "name": "feature-team",
   "agents": [
     {"id":"coder","model":"zai/glm-5.3-flash","role":"dev"},
@@ -70,7 +72,7 @@ Both tools use the same contract:
 
 Actions: `start`, `send`, `wait`, `status`, `messages`, `checkpoint`, `stop`.
 
-`send` waits in the same MCP call by default. `messages` without a message reads the shared forum; with a message it posts to one agent or the whole pool. Pools are globally indexed by pool id and route back to their bound allowed workspace after MCP reconnects.
+`start` requires an explicit absolute Git repository `root`; it intentionally does not trust implicit session selection because ChatGPT may reconnect its MCP transport between tool calls. `send` waits in the same MCP call by default. `messages` without a message reads the shared forum; with a message it posts to one agent or the whole pool. Pools are globally indexed by pool id and route back to their bound allowed workspace after MCP reconnects.
 
 ## One endpoint, many projects
 

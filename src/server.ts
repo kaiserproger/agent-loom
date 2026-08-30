@@ -162,6 +162,13 @@ function toolCallLoggingEnabled(): boolean {
   return process.env.AGENT_LOOM_LOG_TOOL_CALLS === "1" || process.env.AGENT_LOOM_LOG_REQUESTS === "1" || process.env.CODEXPRO_LOG_TOOL_CALLS === "1" || process.env.CODEXPRO_LOG_REQUESTS === "1";
 }
 
+function repositoryRoot(workspace: Workspace): string | undefined {
+  const result = spawnSync("git", ["-C", workspace.root, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 5000 });
+  if (result.status !== 0) return undefined;
+  const root = result.stdout.trim();
+  return root ? path.resolve(root) : undefined;
+}
+
 function logToolCall(name: string, status: "ok" | "error", started: number): void {
   if (!toolCallLoggingEnabled()) return;
   console.error(`[AgentLoomTool] ${name} ${status} ${Date.now() - started}ms`);
@@ -2068,11 +2075,13 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     "workspace",
     {
       title: "Workspace Router",
-      description: "List, open, select, or inspect one of the allowed project workspaces. Selection belongs to this MCP session/chat; other chats may select different projects through the same endpoint and token.",
+      description: "Route this chat to an allowed project. Use discover when a requested directory is not itself a Git repository; then open the relevant discovered repository before Git operations or starting Pi/Codex pools. Selection belongs only to this MCP session, so other chats may select different projects through the same endpoint.",
       inputSchema: {
-        action: z.enum(["list", "open", "use", "current"]),
-        root: z.string().optional().describe("Allowed project root for action=open."),
-        workspace_id: z.string().optional().describe("Stable workspace id for action=use.")
+        action: z.enum(["list", "discover", "open", "use", "current"]),
+        root: z.string().optional().describe("Allowed directory for action=open or action=discover."),
+        workspace_id: z.string().optional().describe("Stable workspace id for action=use."),
+        max_depth: z.number().int().min(0).max(6).optional().describe("Repository discovery depth. Default: 3."),
+        max_results: z.number().int().min(1).max(500).optional().describe("Repository discovery result limit. Default: 100.")
       },
       annotations: READ_ONLY_ANNOTATIONS
     },
@@ -2080,7 +2089,19 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       if (args.action === "open") {
         if (!args.root) throw new CodexProError("root is required for workspace action=open.");
         const opened = workspaces.openWorkspace(args.root);
-        return textResult(`# Workspace Selected\n\n${opened.id} — ${opened.root}`, { workspace: opened, selected_workspace_id: opened.id });
+        const repositories = workspaces.discoverRepositories(opened.root, { maxDepth: 3, maxResults: 100 });
+        const isGitRoot = repositories.some((repository) => repository.root === opened.root);
+        const guidance = isGitRoot || repositories.length === 0
+          ? ""
+          : `\n\nThis directory is not a Git repository. Before Git operations or agent pools, open one of these discovered repositories:\n${repositories.map((repository) => `- ${repository.root}`).join("\n")}`;
+        return textResult(`# Workspace Selected\n\n${opened.id} — ${opened.root}${guidance}`, { workspace: opened, selected_workspace_id: opened.id, is_git_root: isGitRoot, repositories });
+      }
+      if (args.action === "discover") {
+        const repositories = workspaces.discoverRepositories(args.root, { maxDepth: args.max_depth, maxResults: args.max_results });
+        const text = repositories.length
+          ? repositories.map((repository) => `- ${repository.root}`).join("\n")
+          : "No Git repositories found within the requested depth.";
+        return textResult(`# Discovered Git Repositories\n\n${text}`, { root: args.root ?? workspaces.getWorkspace().root, repositories });
       }
       if (args.action === "use") {
         if (!args.workspace_id) throw new CodexProError("workspace_id is required for workspace action=use.");
@@ -2104,10 +2125,11 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     runtime,
     {
       title: runtime === "pi" ? "Pi Agents" : "Codex Agents",
-      description: `Unified persistent ${runtime} agent interface. Start once, then send many tasks to stable h5i boxes and conversation sessions. Pools survive MCP requests and route back to their bound workspace by id.`,
+      description: `Unified persistent ${runtime} agent interface. For action=start, ALWAYS pass the explicit Git repository root from the user's request; MCP reconnects can reset implicit workspace selection. Start once, then send many tasks to stable h5i boxes and conversation sessions. Pools survive MCP requests and route back to their bound workspace by id.`,
       inputSchema: {
         action: z.enum(["start", "send", "wait", "status", "messages", "checkpoint", "stop"]),
-        workspace_id: z.string().optional().describe("Workspace for action=start. Omit to use this chat's selected workspace."),
+        root: z.string().optional().describe("Explicit Git repository root. Required for action=start so a reconnect cannot bind the pool to the default workspace."),
+        workspace_id: z.string().optional().describe("Optional opened workspace id; root remains required for action=start."),
         pool: z.string().optional().describe("Pool id. Required except for action=start."),
         name: z.string().optional().describe("Pool name for action=start."),
         agents: z.array(z.object({
@@ -2127,7 +2149,14 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       if (args.action === "start") {
-        const workspace = workspaces.getWorkspace(args.workspace_id);
+        if (!args.root) throw new CodexProError(`root is required for ${runtime} action=start. Pass the explicit Git repository root from the user's request; do not rely on implicit workspace selection.`);
+        const workspace = workspaces.openWorkspace(args.root, { select: false });
+        const gitRoot = repositoryRoot(workspace);
+        if (!gitRoot || gitRoot !== path.resolve(workspace.root)) {
+          const repositories = workspaces.discoverRepositories(workspace.root, { maxDepth: 3, maxResults: 30 });
+          const candidates = repositories.length ? `\nDiscovered repositories:\n${repositories.map((repository) => `- ${repository.root}`).join("\n")}` : "";
+          throw new CodexProError(`Persistent ${runtime} pools require the selected workspace itself to be a Git repository root. Selected: ${workspace.root}${gitRoot ? `\nContaining Git root: ${gitRoot}` : ""}${candidates}\nOpen the intended repository with workspace action=open, then retry start.`);
+        }
         const result = await createAgentPool(workspace, { runtime, name: args.name, agents: args.agents, workers: args.agents?.length ?? 2, seed_dirty: true });
         return textResult(`# ${runtime} Pool Started\n\nPool: ${result.pool_id}\nWorkspace: ${result.root}\nForum: ${result.forum_thread_id}`, result);
       }

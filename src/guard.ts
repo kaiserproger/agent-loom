@@ -13,6 +13,11 @@ export interface Workspace {
   openedAt: string;
 }
 
+export interface DiscoveredRepository {
+  root: string;
+  relativePath: string;
+}
+
 export class CodexProError extends Error {
   constructor(message: string) {
     super(message);
@@ -128,6 +133,31 @@ export class WorkspaceManager {
   listWorkspaces(): Workspace[] {
     for (const root of this.config.allowedRoots) this.openWorkspace(root, { select: false });
     return [...this.workspaces.values()];
+  }
+
+  discoverRepositories(rootInput?: string, options: { maxDepth?: number; maxResults?: number } = {}): DiscoveredRepository[] {
+    const container = this.openWorkspace(rootInput, { select: false }).root;
+    const maxDepth = Math.max(0, Math.min(options.maxDepth ?? 3, 6));
+    const maxResults = Math.max(1, Math.min(options.maxResults ?? 100, 500));
+    const repositories: DiscoveredRepository[] = [];
+    const queue: Array<{ dir: string; depth: number }> = [{ dir: container, depth: 0 }];
+    const skipped = new Set([".git", ".analysis", ".agent-loom", "node_modules", "target", "dist", "build"]);
+    while (queue.length && repositories.length < maxResults) {
+      const current = queue.shift()!;
+      if (fs.existsSync(path.join(current.dir, ".git"))) {
+        repositories.push({ root: current.dir, relativePath: normalizeRelPath(path.relative(container, current.dir) || ".") });
+        continue;
+      }
+      if (current.depth >= maxDepth) continue;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(current.dir, { withFileTypes: true }); }
+      catch { continue; }
+      for (const entry of entries) {
+        if (!entry.isDirectory() || skipped.has(entry.name) || entry.isSymbolicLink()) continue;
+        queue.push({ dir: path.join(current.dir, entry.name), depth: current.depth + 1 });
+      }
+    }
+    return repositories;
   }
 
   selectWorkspace(id: string): Workspace {
