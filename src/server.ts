@@ -19,7 +19,7 @@ import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
-import { createAgentPool, runAgentTask, waitAgentTask, postAgentMessage, readAgentForum, agentPoolStatus, checkpointAgentWorker, applyAgentCheckpoint, stopAgentPool, resolveAgentPoolWorkspace } from "./agentPoolOps.js";
+import { createAgentPool, runAgentTask, waitAgentTask, postAgentMessage, readAgentForum, agentPoolStatus, checkpointAgentWorker, applyAgentCheckpoint, stopAgentPool, resolveAgentPoolWorkspace, availablePiModels } from "./agentPoolOps.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -2126,16 +2126,17 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     runtime,
     {
       title: runtime === "pi" ? "Pi Agents" : "Codex Agents",
-      description: `Unified persistent ${runtime} agent interface. For action=start, ALWAYS pass the explicit Git repository root from the user's request; MCP reconnects can reset implicit workspace selection. apply_checkpoint safely applies only a selected worker delta to the dirty main worktree without commit, reset, stash, or h5i box merge. Pools survive MCP requests and route back to their bound workspace by id.`,
+      description: `Interface to the repository's ONE canonical h5i agent pool. NEVER create a pool per chat or task: action=start is idempotent for a Git root and returns or extends the existing mixed Pi/Codex pool. Always reuse its pool_id. Pi agents may choose any locally available Pi model/provider and, when one model/provider fails, retry with another available model/provider while preserving the same pool, box, and task contract. For action=start, ALWAYS pass the explicit Git repository root. apply_checkpoint safely applies only a selected worker delta without commit/reset/stash/h5i merge.`,
       inputSchema: {
-        action: z.enum(["start", "send", "wait", "status", "messages", "checkpoint", "apply_checkpoint", "stop"]),
+        action: z.enum(["models", "start", "send", "wait", "status", "messages", "checkpoint", "apply_checkpoint", "stop"]),
         root: z.string().optional().describe("Explicit Git repository root. Required for action=start so a reconnect cannot bind the pool to the default workspace."),
         workspace_id: z.string().optional().describe("Optional opened workspace id; root remains required for action=start."),
         pool: z.string().optional().describe("Pool id. Required except for action=start."),
         name: z.string().optional().describe("Pool name for action=start."),
         agents: z.array(z.object({
           id: z.string().optional(),
-          model: z.string().optional(),
+          model: z.string().optional().describe("Preferred model. Omit to let Agent Loom choose from locally available runtime models."),
+          models: z.array(z.string()).max(8).optional().describe("Optional ordered Pi model/provider candidates. Agent Loom also discovers local Pi models and fails over after invocation errors."),
           role: z.enum(["dev", "reviewer"]).optional(),
           thinking: z.enum(["low", "medium", "high"]).optional()
         })).min(1).max(4).optional(),
@@ -2150,6 +2151,11 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       annotations: BASH_ANNOTATIONS
     },
     async (args) => {
+      if (args.action === "models") {
+        if (runtime !== "pi") throw new CodexProError("action=models is available through the pi tool; Codex CLI does not expose an equivalent local model inventory.");
+        const models = availablePiModels();
+        return textResult(`# Available Pi Models\n\n${models.map((model) => `- ${model}`).join("\n")}\n\nChoose any suitable model/provider. If it fails, Agent Loom can continue the same task with another candidate in the canonical pool.`, { runtime, models });
+      }
       if (args.action === "start") {
         if (!args.root) throw new CodexProError(`root is required for ${runtime} action=start. Pass the explicit Git repository root from the user's request; do not rely on implicit workspace selection.`);
         const workspace = workspaces.openWorkspace(args.root, { select: false });
@@ -2164,11 +2170,11 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       }
       if (!args.pool) throw new CodexProError(`pool is required for ${runtime} action=${args.action}.`);
       const route = await resolveAgentPoolWorkspace(args.pool);
-      if (route.runtime !== runtime) throw new CodexProError(`Pool ${args.pool} belongs to ${route.runtime}, not ${runtime}.`);
+      if (route.runtime !== runtime && route.runtime !== "mixed") throw new CodexProError(`Canonical pool ${args.pool} currently belongs to ${route.runtime}, not ${runtime}. Call ${runtime} action=start with the same root to add ${runtime} agents to that one pool.`);
       const workspace = workspaces.openWorkspace(route.root, { select: false });
       if (args.action === "send") {
         if (!args.message) throw new CodexProError("message is required for action=send.");
-        const result = await runAgentTask(workspace, { pool_id: args.pool, worker_id: args.agent, prompt: args.message, max_wait_seconds: args.wait_seconds ?? 60 });
+        const result = await runAgentTask(workspace, { pool_id: args.pool, worker_id: args.agent, runtime, prompt: args.message, max_wait_seconds: args.wait_seconds ?? 60 });
         return textResult(result.state === "completed" ? `# ${runtime} Result\n\nTask: ${result.task_id}\nStatus: ${result.status}\n\n${result.summary ?? ""}` : `# ${runtime} Task Pending\n\nTask: ${result.task_id}`, result);
       }
       if (args.action === "wait") {
@@ -2178,7 +2184,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       }
       if (args.action === "status") {
         const result = await agentPoolStatus(workspace, { pool_id: args.pool });
-        return textResult(`# ${runtime} Pool Status\n\n${result.workers.map((worker: any) => `${worker.worker_id}: running=${worker.running} model=${worker.model} changes=${worker.changed_paths.length}`).join("\n")}`, result);
+        return textResult(`# Canonical Agent Pool Status\n\n${result.workers.map((worker: any) => `${worker.worker_id}: runtime=${worker.runtime} running=${worker.running} model=${worker.model} changes=${worker.changed_paths.length}`).join("\n")}\n\nReuse this pool_id; do not create another pool for this repository.`, result);
       }
       if (args.action === "messages") {
         const result: any = args.message

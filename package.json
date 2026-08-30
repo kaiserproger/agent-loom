@@ -1,6 +1,6 @@
 {
   "name": "agent-loom",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "One MCP endpoint for multiple workspaces and persistent Pi/Codex agent pools in h5i.",
   "type": "module",
   "license": "MIT",

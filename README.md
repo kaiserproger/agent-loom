@@ -1,6 +1,6 @@
 # Agent Loom
 
-Agent Loom is a local MCP server for routing multiple ChatGPT chats to multiple explicitly allowed Git workspaces through **one endpoint and one token**. It also manages persistent Pi and Codex agent pools in h5i boxes.
+Agent Loom is a local MCP server for routing multiple ChatGPT chats to multiple explicitly allowed Git workspaces through **one endpoint and one token**. It enforces one canonical persistent h5i agent pool per Git repository, shared by every chat and able to contain both Pi and Codex workers.
 
 Agent Loom is derived from the MIT-licensed CodexPro connector. The public orchestration interface and persistent agent runtime are maintained here independently.
 
@@ -70,11 +70,13 @@ Both tools use the same contract:
 }
 ```
 
-Actions: `start`, `send`, `wait`, `status`, `messages`, `checkpoint`, `apply_checkpoint`, `stop`.
+Actions: `models`, `start`, `send`, `wait`, `status`, `messages`, `checkpoint`, `apply_checkpoint`, `stop`.
+
+`pi {"action":"models"}` lists locally available Pi models/providers. A coordinator may choose any of them or omit `model`; Pi workers keep an ordered candidate list and automatically try another available model/provider after an invocation failure, within the same canonical pool and shared 20-minute task budget.
 
 `apply_checkpoint` takes `pool`, `agent`, and the `checkpoint` returned by `checkpoint`. It verifies and atomically applies only that worker delta over the current dirty worktree without commit, reset, stash, or h5i box merge. Existing owner changes are preserved; overlapping patches fail before mutation, and an application receipt prevents replay.
 
-`start` requires an explicit absolute Git repository `root`; it intentionally does not trust implicit session selection because ChatGPT may reconnect its MCP transport between tool calls. `send` waits in the same MCP call by default. `messages` without a message reads the shared forum; with a message it posts to one agent or the whole pool. Pools are globally indexed by pool id and route back to their bound allowed workspace after MCP reconnects.
+`start` requires an explicit absolute Git repository `root`; it intentionally does not trust implicit session selection because ChatGPT may reconnect its MCP transport between tool calls. It is idempotent by Git root: repeated names, chats, and requests return the existing pool. Calling the other runtime's `start` adds workers to that same mixed pool, up to four total. `send` waits in the same MCP call by default. `messages` without a message reads the shared forum; with a message it posts to one agent or the whole pool. Pools are globally indexed by pool id and route back to their bound allowed workspace after MCP reconnects.
 
 ## One endpoint, many projects
 

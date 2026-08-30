@@ -8,7 +8,7 @@ Configured allowed roots are the authority boundary. `workspace open/use` never 
 
 ## Runtime adapters
 
-The public `pi` and `codex` tools share the same operation schema. Both use the same h5i pool lifecycle:
+The public `pi` and `codex` tools share one canonical pool per canonical Git root. A filesystem start lock makes `start` idempotent across concurrent MCP sessions/processes. Repeated starts reuse the pool; starting the other runtime adds workers to it rather than creating another forum or pool. Both use the same h5i worker lifecycle:
 
 1. create a stable h5i box/worktree;
 2. attach a forum identity;
@@ -19,7 +19,7 @@ The public `pi` and `codex` tools share the same operation schema. Both use the 
 7. write signed result attachments and preserve the conversation id;
 8. exit after one task; idle dispatchers recycle after at most 60 seconds, and the host supervisor starts the next invocation.
 
-Pi resumes through an explicit Pi session UUID. Codex captures `thread.started.thread_id` from JSONL and uses `codex exec resume` for later tasks.
+Pi resumes through an explicit Pi session UUID. The host inventories `pi --list-models`; a Pi worker keeps up to eight ordered candidates and retries another provider/model after a non-zero invocation failure, while all attempts share one 20-minute task deadline. Codex captures `thread.started.thread_id` from JSONL and uses `codex exec resume` for later tasks.
 
 ## State
 
