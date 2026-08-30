@@ -27,7 +27,11 @@ const child = spawn(process.execPath, ['dist/http.js'], {
     AGENT_LOOM_HOST: '127.0.0.1',
     AGENT_LOOM_PORT: String(port),
     AGENT_LOOM_HTTP_TOKEN: token,
-    CODEXPRO_TOOL_MODE: 'standard'
+    AGENT_LOOM_TOOL_MODE: 'full',
+    AGENT_LOOM_BASH_MODE: 'full',
+    AGENT_LOOM_BASH_TRANSCRIPT: 'full',
+    AGENT_LOOM_CODEX_SESSIONS: 'read',
+    AGENT_LOOM_TOOL_CARDS: '1'
   },
   stdio: ['ignore', 'pipe', 'pipe']
 });
@@ -57,7 +61,10 @@ try {
   const a = await connect('chat-a');
   const b = await connect('chat-b');
   try {
-    const tools = (await a.client.listTools()).tools.map(tool => tool.name);
+    const listedTools = (await a.client.listTools()).tools;
+    const tools = listedTools.map(tool => tool.name);
+    const bashTool = listedTools.find(tool => tool.name === 'bash');
+    if (bashTool?._meta?.['openai/outputTemplate'] !== 'ui://widget/agent-loom-tool-card-v10.html') throw new Error('Agent Loom tool-card metadata missing');
     const requiredTools = ['workspace', 'pi', 'codex', 'read', 'write', 'edit', 'apply_patch', 'bash', 'tree', 'search', 'show_changes'];
     for (const expected of requiredTools) if (!tools.includes(expected)) throw new Error(`missing ${expected}`);
     const listed = await call(a.client, 'workspace', { action: 'list' });
@@ -73,7 +80,9 @@ try {
     const edited = await call(a.client, 'edit', { path: 'chat-a.txt', old_text: 'before', new_text: 'after' });
     const read = await call(a.client, 'read', { path: 'chat-a.txt' });
     const bash = await call(a.client, 'bash', { command: 'pwd' });
-    if (edited.replacements !== 1 || !read.text.includes('after') || bash.stdout.trim() !== rootA || bash.exitCode !== 0) throw new Error(`direct ChatGPT edit/bash tools failed: ${JSON.stringify({ edited, read, bash })}`);
+    const wrapped = await call(a.client, 'loom', { action: 'config' });
+    if (edited.replacements !== 1 || edited.loom_tool !== 'edit' || 'codexpro_tool' in edited || !read.text.includes('after') || bash.stdout.trim() !== rootA || bash.exitCode !== 0) throw new Error(`direct ChatGPT edit/bash tools failed: ${JSON.stringify({ edited, read, bash })}`);
+    if (wrapped.loom_tool !== 'server_config' || 'codexpro_tool' in wrapped) throw new Error(`Agent Loom supertool card data failed: ${JSON.stringify(wrapped)}`);
     console.log(JSON.stringify({ tools: requiredTools, chat_a: currentA.workspace.root, chat_b: currentB.workspace.root, same_endpoint: true, direct_edit: true, direct_bash: true }, null, 2));
   } finally {
     await a.client.close();

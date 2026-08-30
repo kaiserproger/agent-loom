@@ -74,6 +74,8 @@ Actions: `start`, `send`, `wait`, `status`, `messages`, `checkpoint`, `stop`.
 
 ## One endpoint, many projects
 
+Add the generated MCP URL to ChatGPT as a new connector named **Agent Loom**. Do not reuse or prompt for an older CodexPro connector: connector names and cached tool schemas belong to the ChatGPT connection, not to the local command. After an upgrade that changes tools or cards, refresh or recreate the Agent Loom connector.
+
 ```bash
 npm install
 npm run build

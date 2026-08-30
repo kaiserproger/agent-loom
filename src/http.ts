@@ -1455,7 +1455,7 @@ async function main(): Promise<void> {
   }
 
   const app = express();
-  const logRequests = process.env.CODEXPRO_LOG_REQUESTS === "1";
+  const logRequests = process.env.AGENT_LOOM_LOG_REQUESTS === "1" || process.env.CODEXPRO_LOG_REQUESTS === "1";
   const authFailureWindow = new Map<string, { count: number; resetAt: number }>();
   const authFailureLimit = 10;
 

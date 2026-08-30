@@ -74,7 +74,7 @@ function bashTextResult(config: CodexProConfig, result: Awaited<ReturnType<typeo
     `Duration: ${result.durationMs} ms`,
     `Output: stdout ${stdoutLines} line${stdoutLines === 1 ? "" : "s"}, stderr ${stderrLines} line${stderrLines === 1 ? "" : "s"}.`,
     "",
-    "Raw stdout/stderr are in the structured CodexPro card. Start with `--bash-transcript full` to print raw output in chat."
+    "Raw stdout/stderr are in the structured Agent Loom card. Start with `--bash-transcript full` to print raw output in chat."
   ].join("\n");
 }
 
@@ -159,19 +159,19 @@ function descriptorOptionsForConfig(config: CodexProConfig, name: string, option
 }
 
 function toolCallLoggingEnabled(): boolean {
-  return process.env.CODEXPRO_LOG_TOOL_CALLS === "1" || process.env.CODEXPRO_LOG_REQUESTS === "1";
+  return process.env.AGENT_LOOM_LOG_TOOL_CALLS === "1" || process.env.AGENT_LOOM_LOG_REQUESTS === "1" || process.env.CODEXPRO_LOG_TOOL_CALLS === "1" || process.env.CODEXPRO_LOG_REQUESTS === "1";
 }
 
 function logToolCall(name: string, status: "ok" | "error", started: number): void {
   if (!toolCallLoggingEnabled()) return;
-  console.error(`[CodexProTool] ${name} ${status} ${Date.now() - started}ms`);
+  console.error(`[AgentLoomTool] ${name} ${status} ${Date.now() - started}ms`);
 }
 
 function registerToolCardResource(server: McpServer, config: CodexProConfig): void {
   if (config.connectionTest) return;
   const s = server as any;
   if (typeof s.registerResource !== "function") {
-    throw new Error("Unsupported MCP SDK: CodexPro widgets require registerResource.");
+    throw new Error("Unsupported MCP SDK: Agent Loom widgets require registerResource.");
   }
 
   const registerUri = (uri: string, name: string): void => {
@@ -179,8 +179,8 @@ function registerToolCardResource(server: McpServer, config: CodexProConfig): vo
       name,
       uri,
       {
-        title: "CodexPro Tool Card",
-        description: "Compact visual renderer for CodexPro workspace orientation, source changes, and handoffs.",
+        title: "Agent Loom Tool Card",
+        description: "Compact visual renderer for Agent Loom workspace orientation, source changes, and agent operations.",
         mimeType: TOOL_CARD_MIME_TYPE
       },
       async () => ({
@@ -198,7 +198,7 @@ function registerToolCardResource(server: McpServer, config: CodexProConfig): vo
                   resourceDomains: []
                 }
               },
-              "openai/widgetDescription": "Renders CodexPro workspace orientation, diagnostics, file diffs, change reviews, terminal checks, Pro context exports, and handoff plans as compact developer cards with bounded previews.",
+              "openai/widgetDescription": "Renders Agent Loom workspace orientation, diagnostics, file diffs, change reviews, terminal checks, and agent operations as compact developer cards with bounded previews.",
               "openai/widgetPrefersBorder": true,
               "openai/widgetDomain": config.widgetDomain,
               "openai/widgetCSP": {
@@ -212,9 +212,9 @@ function registerToolCardResource(server: McpServer, config: CodexProConfig): vo
     );
   };
 
-  registerUri(TOOL_CARD_URI, "codexpro-tool-card");
+  registerUri(TOOL_CARD_URI, "agent-loom-tool-card");
   for (const legacyUri of TOOL_CARD_LEGACY_URIS) {
-    registerUri(legacyUri, `codexpro-tool-card-${legacyUri.match(/v\d+/)?.[0] ?? "legacy"}`);
+    registerUri(legacyUri, `agent-loom-tool-card-${legacyUri.match(/v\d+/)?.[0] ?? "legacy"}`);
   }
 }
 
@@ -224,8 +224,8 @@ const SUPERTOOL_NAME = "loom";
 const SUPERTOOL_ACTION_ALIASES: Record<string, string> = {
   actions: "list_actions",
   config: "server_config",
-  self_test: "codexpro_self_test",
-  inventory: "codexpro_inventory",
+  self_test: "loom_self_test",
+  inventory: "loom_inventory",
   open: "open_current_workspace",
   snapshot: "workspace_snapshot",
   changes: "show_changes",
@@ -266,11 +266,11 @@ function assertWriteToolAllowed(config: CodexProConfig, relPath: string): void {
   if (config.writeMode === "handoff" && isContextPath(config, relPath)) return;
   if (config.writeMode === "handoff") {
     throw new CodexProError(
-      `Source writes are disabled because CODEXPRO_WRITE_MODE=handoff. ` +
+      `Source writes are disabled because AGENT_LOOM_WRITE_MODE=handoff. ` +
         `Use handoff_to_agent or handoff_to_codex, or write/edit/apply_patch only inside ${config.contextDir}/.`
     );
   }
-  throw new CodexProError("write/edit/apply_patch tools are disabled because CODEXPRO_WRITE_MODE=off. handoff_to_agent and handoff_to_codex are still available for planning.");
+  throw new CodexProError("write/edit/apply_patch tools are disabled because AGENT_LOOM_WRITE_MODE=off. handoff_to_agent and handoff_to_codex are still available for planning.");
 }
 
 function registerToolCompat(
@@ -339,8 +339,8 @@ const STANDARD_TOOL_NAMES = [
 const FULL_TOOL_NAMES = [
   SUPERTOOL_NAME,
   "server_config",
-  "codexpro_self_test",
-  "codexpro_inventory",
+  "loom_self_test",
+  "loom_inventory",
   "load_skill",
   "list_workspaces",
   "open_current_workspace",
@@ -372,7 +372,7 @@ const FULL_TOOL_NAMES = [
 
 const CONNECTION_TEST_HIDDEN_TOOLS = new Set<string>([
   SUPERTOOL_NAME,
-  "codexpro_self_test",
+  "loom_self_test",
   "write",
   "edit",
   "apply_patch",
@@ -935,18 +935,18 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     server,
     SUPERTOOL_NAME,
     {
-      title: "CodexPro Supertool",
+      title: "Agent Loom Supertool",
       description:
-        "Stable wrapper for advanced ChatGPT connector setups. Pass action plus args to call an already-registered CodexPro tool without changing the visible schema; it cannot call tools disabled by the current mode.",
+        "Stable wrapper for advanced ChatGPT connector setups. Pass action plus args to call an already-registered Agent Loom tool without changing the visible schema; it cannot call tools disabled by the current mode.",
       inputSchema: {
         action: z.string().optional().describe("Action or registered tool name. Use list_actions to see what this server mode allows."),
-        args: z.record(z.any()).optional().describe("Arguments for the selected action. Same shape as the wrapped CodexPro tool.")
+        args: z.record(z.any()).optional().describe("Arguments for the selected action. Same shape as the wrapped Agent Loom tool.")
       },
       annotations: BASH_ANNOTATIONS,
       _meta: {
         ...toolCardMeta(),
-        "openai/toolInvocation/invoking": "Running CodexPro supertool action...",
-        "openai/toolInvocation/invoked": "CodexPro supertool action complete"
+        "openai/toolInvocation/invoking": "Running Agent Loom supertool action...",
+        "openai/toolInvocation/invoked": "Agent Loom supertool action complete"
       }
     },
     async (args) => {
@@ -954,7 +954,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       const names = registeredToolNames(server).filter((name) => name !== SUPERTOOL_NAME);
       if (action === "list_actions" || action === "help") {
         const text = [
-          "# CodexPro Supertool",
+          "# Agent Loom Supertool",
           "",
           "Use `codexpro` only when a stable wrapper is useful for ChatGPT connector caching or custom workflows. The explicit tools remain the preferred default because they give clearer descriptions and validation.",
           "",
@@ -979,14 +979,14 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       }
 
       if (action === SUPERTOOL_NAME) {
-        throw new CodexProError("codexpro cannot call itself. Use action=list_actions to inspect available wrapped actions.");
+        throw new CodexProError("loom cannot call itself. Use action=list_actions to inspect available wrapped actions.");
       }
 
       const handler = registeredToolHandler(server, action);
       if (!handler) {
         throw new CodexProError(
-          `CodexPro action is not available in the current mode: ${action}. ` +
-            "Call codexpro with action=list_actions, or restart CodexPro with a broader tool mode if that action should be exposed."
+          `Agent Loom action is not available in the current mode: ${action}. ` +
+            "Call loom with action=list_actions, or restart Agent Loom with a broader tool mode if that action should be exposed."
         );
       }
 
@@ -1003,9 +1003,9 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       if (result && typeof result === "object") {
         const structured = result.structuredContent;
         result.structuredContent = {
-          codexpro_tool: action,
-          codexpro_title: action,
-          codexpro_super_action: action,
+          loom_tool: action,
+          loom_title: action,
+          loom_super_action: action,
           wrapped_tool: action,
           ...(structured && typeof structured === "object" && !Array.isArray(structured) ? structured : {})
         };
@@ -1020,13 +1020,13 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     "server_config",
     {
       title: "Server Config",
-      description: "Show CodexPro server configuration, safety modes, limits, and blocked paths. Does not reveal auth tokens.",
+      description: "Show Agent Loom server configuration, safety modes, limits, and blocked paths. Does not reveal auth tokens.",
       inputSchema: {},
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: {
         ...toolCardMeta(),
-        "openai/toolInvocation/invoking": "Reading CodexPro server config...",
-        "openai/toolInvocation/invoked": "CodexPro server config ready"
+        "openai/toolInvocation/invoking": "Reading Agent Loom server config...",
+        "openai/toolInvocation/invoked": "Agent Loom server config ready"
       }
     },
     async () => {
@@ -1060,18 +1060,18 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
         registeredTools: registeredToolNames(server),
         registeredToolCount: registeredToolNames(server).length
       };
-      return textResult(`# CodexPro Server Config\n\n${JSON.stringify(safeConfig, null, 2)}`, safeConfig);
+      return textResult(`# Agent Loom Server Config\n\n${JSON.stringify(safeConfig, null, 2)}`, safeConfig);
     }
   );
 
   registerCodexTool(
     config,
     server,
-    "codexpro_self_test",
+    "loom_self_test",
     {
-      title: "CodexPro Self Test",
+      title: "Agent Loom Self Test",
       description:
-        "Run one controlled, local-only CodexPro diagnostic. It checks modes, expected tools, workspace access, skills, git, safe bash policy, selected-only Pro context, and optional .ai-bridge write/edit probe without touching source files.",
+        "Run one controlled, local-only Agent Loom diagnostic. It checks modes, expected tools, workspace access, skills, git, safe bash policy, selected-only Pro context, and optional .ai-bridge write/edit probe without touching source files.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         write_probe: z.boolean().optional().describe("Create/edit only .ai-bridge/codexpro-self-test.md. Default: true."),
@@ -1083,8 +1083,8 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       annotations: HANDOFF_WRITE_ANNOTATIONS,
       _meta: {
         ...toolCardMeta(),
-        "openai/toolInvocation/invoking": "Running CodexPro self-test...",
-        "openai/toolInvocation/invoked": "CodexPro self-test complete"
+        "openai/toolInvocation/invoking": "Running Agent Loom self-test...",
+        "openai/toolInvocation/invoked": "Agent Loom self-test complete"
       }
     },
     async (args) => {
@@ -1145,12 +1145,12 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
 
       if (parseBool(args.write_probe, true)) {
         if (config.writeMode === "off") {
-          check("write/edit probe", "warn", "skipped because CODEXPRO_WRITE_MODE=off");
+          check("write/edit probe", "warn", "skipped because AGENT_LOOM_WRITE_MODE=off");
         } else {
           try {
             assertWriteToolAllowed(config, probePath);
             const content = [
-              "# CodexPro Self Test",
+              "# Agent Loom Self Test",
               "",
               `Updated: ${new Date().toISOString()}`,
               `Workspace: ${workspace.root}`,
@@ -1183,7 +1183,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
             check("selected-only pro context", "warn", "skipped because write probe did not create the selected file");
           } else {
             const context = await buildProContext(config, guard, workspace, {
-              title: "CodexPro Self Test Context",
+              title: "Agent Loom Self Test Context",
               selectedPaths: [probePath],
               includeImportantFiles: false,
               includeChangedFiles: false,
@@ -1242,7 +1242,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       const passed = checks.filter((item) => item.status === "pass").length;
       const status = failed ? "fail" : warned ? "warn" : "pass";
       const text = [
-        "# CodexPro Self Test",
+        "# Agent Loom Self Test",
         "",
         `Status: ${status}`,
         `Workspace: ${workspace.root}`,
@@ -1257,7 +1257,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
         "",
         "## Terms Boundary",
         "",
-        "CodexPro exposes local repo tools to the ChatGPT session the user controls. It does not provide models, proxy model access, resell access, modify quotas, bypass limits, or run local implementation agents through remote MCP tools."
+        "Agent Loom exposes local repo tools to the ChatGPT session the user controls. It does not provide models, proxy model access, resell access, modify quotas, bypass limits, or run local implementation agents through remote MCP tools."
       ].join("\n");
 
       return textResult(text, {
@@ -1293,11 +1293,11 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
   registerCodexTool(
     config,
     server,
-    "codexpro_inventory",
+    "loom_inventory",
     {
-      title: "CodexPro Inventory",
+      title: "Agent Loom Inventory",
       description:
-        "List CodexPro modes plus discovered skill names and configured MCP server names. Use this early when planning needs local agent capabilities.",
+        "List Agent Loom modes plus discovered skill names and configured MCP server names. Use this early when planning needs local agent capabilities.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use the workspace selected for this MCP session."),
         include_global_skills: z.boolean().optional().describe("Include user and plugin skill folders. Default: true."),
@@ -1307,8 +1307,8 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: {
         ...toolCardMeta(),
-        "openai/toolInvocation/invoking": "Reading CodexPro inventory...",
-        "openai/toolInvocation/invoked": "CodexPro inventory ready"
+        "openai/toolInvocation/invoking": "Reading Agent Loom inventory...",
+        "openai/toolInvocation/invoked": "Agent Loom inventory ready"
       }
     },
     async (args) => {
@@ -1397,8 +1397,8 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: {
         ...toolCardMeta(),
-        "openai/toolInvocation/invoking": "Listing CodexPro workspaces...",
-        "openai/toolInvocation/invoked": "CodexPro workspaces listed"
+        "openai/toolInvocation/invoking": "Listing Agent Loom workspaces...",
+        "openai/toolInvocation/invoked": "Agent Loom workspaces listed"
       }
     },
     async () => {
@@ -1432,8 +1432,8 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       annotations: SESSION_READ_ANNOTATIONS,
       _meta: {
         ...toolCardMeta(),
-        "openai/toolInvocation/invoking": "Opening current CodexPro workspace...",
-        "openai/toolInvocation/invoked": "Current CodexPro workspace opened"
+        "openai/toolInvocation/invoking": "Opening current Agent Loom workspace...",
+        "openai/toolInvocation/invoked": "Current Agent Loom workspace opened"
       }
     },
     async (args) => {
@@ -1484,8 +1484,8 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
       annotations: SESSION_READ_ANNOTATIONS,
       _meta: {
         ...toolCardMeta(),
-        "openai/toolInvocation/invoking": "Opening CodexPro workspace...",
-        "openai/toolInvocation/invoked": "CodexPro workspace opened"
+        "openai/toolInvocation/invoking": "Opening Agent Loom workspace...",
+        "openai/toolInvocation/invoked": "Agent Loom workspace opened"
       }
     },
     async (args) => {

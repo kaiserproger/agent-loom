@@ -1,7 +1,7 @@
-export const TOOL_CARD_URI = "ui://widget/codexpro-tool-card-v10.html";
+export const TOOL_CARD_URI = "ui://widget/agent-loom-tool-card-v10.html";
 export const TOOL_CARD_LEGACY_URIS = [
-  "ui://widget/codexpro-tool-card-v9.html",
-  "ui://widget/codexpro-tool-card-v8.html"
+  "ui://widget/agent-loom-tool-card-v9.html",
+  "ui://widget/agent-loom-tool-card-v8.html"
 ];
 export const TOOL_CARD_MIME_TYPE = "text/html;profile=mcp-app";
 
@@ -342,7 +342,7 @@ export const toolCardWidgetHtml = String.raw`<!doctype html>
           }
           return null;
         }
-        if (normalized.codexpro_tool || normalized.codexpro_title) return normalized;
+        if (normalized.loom_tool || normalized.loom_title) return normalized;
         const candidates = [
           normalized.structuredContent,
           normalized.toolOutput,
@@ -470,19 +470,19 @@ export const toolCardWidgetHtml = String.raw`<!doctype html>
       }
 
       function renderGeneric(data) {
-        const title = asText(data.codexpro_title, "Tool result");
+        const title = asText(data.loom_title, "Tool result");
         const preview = JSON.stringify(data, null, 2);
-        return card(title, "CodexPro", "Ready", "good", codeBlock("Result", preview));
+        return card(title, "Agent Loom", "Ready", "good", codeBlock("Result", preview));
       }
 
       function renderUnavailable() {
         copyableText = "";
-        root.innerHTML = card("Result unavailable", "CodexPro", "Retry", "warn", '<div class="notice">The tool finished, but its display data did not reach this card. Refresh the ChatGPT plugin connection and try the action once more.</div>');
+        root.innerHTML = card("Result unavailable", "Agent Loom", "Retry", "warn", '<div class="notice">The tool finished, but its display data did not reach this card. Refresh the ChatGPT plugin connection and try the action once more.</div>');
       }
 
       function renderPending() {
         copyableText = "";
-        root.innerHTML = card("Preparing result", "CodexPro", "Loading", "", '<div class="notice">Loading the tool result…</div>', "pending");
+        root.innerHTML = card("Preparing result", "Agent Loom", "Loading", "", '<div class="notice">Loading the tool result…</div>', "pending");
       }
 
       function render(data) {
@@ -492,7 +492,7 @@ export const toolCardWidgetHtml = String.raw`<!doctype html>
           fallbackTimer = null;
         }
         copyableText = "";
-        const tool = asText(data.codexpro_tool, "");
+        const tool = asText(data.loom_tool, "");
         if (tool === "open_current_workspace" || tool === "open_workspace" || tool === "workspace_snapshot") root.innerHTML = renderWorkspace(data);
         else if (tool === "inspect_workspace") root.innerHTML = renderWorkspaceAnalysis(data);
         else if (tool === "git_status") root.innerHTML = renderStatus(data);

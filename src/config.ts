@@ -232,6 +232,10 @@ function contextDirFrom(value: string | undefined): string {
   return normalized;
 }
 
+function loomEnv(name: string): string | undefined {
+  return process.env[`AGENT_LOOM_${name}`] ?? process.env[`CODEXPRO_${name}`];
+}
+
 function boolFrom(value: string | undefined, fallback = false): boolean {
   if (value === undefined) return fallback;
   return ["1", "true", "yes", "y", "on"].includes(value.toLowerCase());
@@ -245,7 +249,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
   const args = parseArgs(argv);
 
   const rootFromArgs = typeof args.root === "string" ? args.root : undefined;
-  const root = rootFromArgs ?? process.env.AGENT_LOOM_ROOT ?? process.env.CODEXPRO_ROOT ?? process.env.CODEBASE_BRIDGE_REPO_ROOT ?? process.cwd();
+  const root = rootFromArgs ?? process.env.AGENT_LOOM_ROOT ?? loomEnv("ROOT") ?? process.env.CODEBASE_BRIDGE_REPO_ROOT ?? process.cwd();
   const defaultRoot = toRealDir(root);
 
   const allowRootArgs = Array.isArray(args["allow-root"])
@@ -255,11 +259,11 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
       : [];
   const envAllowedRoots = [
     ...splitRoots(process.env.AGENT_LOOM_ALLOWED_ROOTS),
-    ...splitRoots(process.env.CODEXPRO_ALLOWED_ROOTS),
+    ...splitRoots(loomEnv("ALLOWED_ROOTS")),
     ...splitRoots(process.env.CODEBASE_BRIDGE_ALLOWED_ROOTS)
   ];
 
-  const allowHome = process.env.AGENT_LOOM_ALLOW_HOME === "1" || process.env.CODEXPRO_ALLOW_HOME === "1" || args["allow-home"] === true;
+  const allowHome = process.env.AGENT_LOOM_ALLOW_HOME === "1" || loomEnv("ALLOW_HOME") === "1" || args["allow-home"] === true;
   const requestedAllowed = [defaultRoot, ...allowRootArgs, ...envAllowedRoots, ...(allowHome ? [os.homedir()] : [])];
   const allowedRoots = [...new Set(requestedAllowed.map(toRealDir))];
 
@@ -285,64 +289,64 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
       : typeof args["tool-cards"] === "string"
         ? args["tool-cards"]
         : undefined;
-  const extraBlockedGlobs = splitList(process.env.CODEXPRO_BLOCKED_GLOBS, ",");
-  const host = hostArg ?? process.env.AGENT_LOOM_HOST ?? process.env.CODEXPRO_HOST ?? process.env.HOST ?? "127.0.0.1";
-  const authToken = process.env.AGENT_LOOM_HTTP_TOKEN ?? process.env.CODEXPRO_HTTP_TOKEN ?? process.env.CODEBASE_BRIDGE_HTTP_TOKEN;
+  const extraBlockedGlobs = splitList(loomEnv("BLOCKED_GLOBS"), ",");
+  const host = hostArg ?? process.env.AGENT_LOOM_HOST ?? loomEnv("HOST") ?? process.env.HOST ?? "127.0.0.1";
+  const authToken = process.env.AGENT_LOOM_HTTP_TOKEN ?? loomEnv("HTTP_TOKEN") ?? process.env.CODEBASE_BRIDGE_HTTP_TOKEN;
   if (authToken && Buffer.byteLength(authToken, "utf8") < MIN_HTTP_TOKEN_BYTES) {
     throw new Error(
-      `CODEXPRO_HTTP_TOKEN must be at least ${MIN_HTTP_TOKEN_BYTES} bytes. ` +
-      "Use `codexpro start` to generate a strong token."
+      `AGENT_LOOM_HTTP_TOKEN must be at least ${MIN_HTTP_TOKEN_BYTES} bytes. ` +
+      "Use `agent-loom start` to generate a strong token."
     );
   }
-  const allowNoToken = boolFrom(process.env.CODEXPRO_ALLOW_NO_HTTP_TOKEN, false) && isLoopbackHost(host);
+  const allowNoToken = boolFrom(loomEnv("ALLOW_NO_HTTP_TOKEN"), false) && isLoopbackHost(host);
   const requireHttpToken =
     (!authToken && !allowNoToken) ||
-    boolFrom(process.env.CODEXPRO_REQUIRE_HTTP_TOKEN, false) ||
-    boolFrom(process.env.CODEXPRO_TUNNEL_MODE, false) ||
+    boolFrom(loomEnv("REQUIRE_HTTP_TOKEN"), false) ||
+    boolFrom(loomEnv("TUNNEL_MODE"), false) ||
     (!isLoopbackHost(host) && !allowNoToken);
-  const bashSessionId = bashSessionIdFrom(bashSessionArg ?? process.env.CODEXPRO_BASH_SESSION_ID);
-  const requireBashSession = boolFrom(requireBashSessionArg ?? process.env.CODEXPRO_REQUIRE_BASH_SESSION, false);
+  const bashSessionId = bashSessionIdFrom(bashSessionArg ?? process.env.AGENT_LOOM_BASH_SESSION_ID ?? loomEnv("BASH_SESSION_ID"));
+  const requireBashSession = boolFrom(requireBashSessionArg ?? process.env.AGENT_LOOM_REQUIRE_BASH_SESSION ?? loomEnv("REQUIRE_BASH_SESSION"), false);
   if (requireBashSession && !bashSessionId) {
-    throw new Error("CODEXPRO_REQUIRE_BASH_SESSION requires CODEXPRO_BASH_SESSION_ID or --bash-session.");
+    throw new Error("AGENT_LOOM_REQUIRE_BASH_SESSION requires AGENT_LOOM_BASH_SESSION_ID or --bash-session.");
   }
 
   return {
     defaultRoot,
     allowedRoots,
     host,
-    port: numberFrom(portArg ?? process.env.AGENT_LOOM_PORT ?? process.env.CODEXPRO_PORT ?? process.env.PORT, 8787, 1, 65535),
-    widgetDomain: widgetDomainFrom(widgetDomainArg ?? process.env.CODEXPRO_WIDGET_DOMAIN),
+    port: numberFrom(portArg ?? process.env.AGENT_LOOM_PORT ?? loomEnv("PORT") ?? process.env.PORT, 8787, 1, 65535),
+    widgetDomain: widgetDomainFrom(widgetDomainArg ?? process.env.AGENT_LOOM_WIDGET_DOMAIN ?? loomEnv("WIDGET_DOMAIN")),
     authToken,
     requireHttpToken,
-    bashMode: bashModeFrom(bashArg ?? process.env.CODEXPRO_BASH_MODE),
-    bashTranscript: bashTranscriptFrom(bashTranscriptArg ?? process.env.CODEXPRO_BASH_TRANSCRIPT),
+    bashMode: bashModeFrom(bashArg ?? process.env.AGENT_LOOM_BASH_MODE ?? loomEnv("BASH_MODE")),
+    bashTranscript: bashTranscriptFrom(bashTranscriptArg ?? process.env.AGENT_LOOM_BASH_TRANSCRIPT ?? loomEnv("BASH_TRANSCRIPT")),
     bashSessionId,
     requireBashSession,
-    codexSessions: codexSessionsFrom(codexSessionsArg ?? process.env.CODEXPRO_CODEX_SESSIONS),
-    codexDir: expandHome(codexDirArg || process.env.CODEXPRO_CODEX_DIR || path.join(os.homedir(), ".codex")),
-    writeMode: writeModeFrom(writeArg ?? process.env.CODEXPRO_WRITE_MODE),
-    toolMode: toolModeFrom(toolModeArg ?? process.env.CODEXPRO_TOOL_MODE),
-    inheritEnv: process.env.CODEXPRO_INHERIT_ENV === "1",
-    maxReadBytes: numberFrom(process.env.CODEXPRO_MAX_READ_BYTES, 180_000, 4_000, 2_000_000),
-    maxWriteBytes: numberFrom(process.env.CODEXPRO_MAX_WRITE_BYTES, 1_000_000, 1_000, 10_000_000),
-    maxOutputBytes: numberFrom(process.env.CODEXPRO_MAX_OUTPUT_BYTES, 120_000, 4_000, 2_000_000),
+    codexSessions: codexSessionsFrom(codexSessionsArg ?? process.env.AGENT_LOOM_CODEX_SESSIONS ?? loomEnv("CODEX_SESSIONS")),
+    codexDir: expandHome(codexDirArg || process.env.AGENT_LOOM_CODEX_DIR || loomEnv("CODEX_DIR") || path.join(os.homedir(), ".codex")),
+    writeMode: writeModeFrom(writeArg ?? process.env.AGENT_LOOM_WRITE_MODE ?? loomEnv("WRITE_MODE")),
+    toolMode: toolModeFrom(toolModeArg ?? process.env.AGENT_LOOM_TOOL_MODE ?? loomEnv("TOOL_MODE")),
+    inheritEnv: process.env.AGENT_LOOM_INHERIT_ENV === "1" || loomEnv("INHERIT_ENV") === "1",
+    maxReadBytes: numberFrom(loomEnv("MAX_READ_BYTES"), 180_000, 4_000, 2_000_000),
+    maxWriteBytes: numberFrom(loomEnv("MAX_WRITE_BYTES"), 1_000_000, 1_000, 10_000_000),
+    maxOutputBytes: numberFrom(loomEnv("MAX_OUTPUT_BYTES"), 120_000, 4_000, 2_000_000),
     // Default hard cap is 10 minutes. Operators can raise up to 15 minutes.
-    maxBashTimeoutMs: numberFrom(process.env.CODEXPRO_MAX_BASH_TIMEOUT_MS, 600_000, 1_000, 900_000),
-    maxImportBytes: numberFrom(process.env.CODEXPRO_MAX_IMPORT_BYTES, 5_000_000, 1_000, 50_000_000),
-    maxSearchResults: numberFrom(process.env.CODEXPRO_MAX_SEARCH_RESULTS, 200, 5, 2_000),
-    maxHttpSessions: numberFrom(process.env.CODEXPRO_MAX_HTTP_SESSIONS, 64, 1, 512),
-    httpSessionTtlMs: numberFrom(process.env.CODEXPRO_HTTP_SESSION_TTL_MS, 30 * 60_000, 60_000, 24 * 60 * 60_000),
+    maxBashTimeoutMs: numberFrom(loomEnv("MAX_BASH_TIMEOUT_MS"), 600_000, 1_000, 900_000),
+    maxImportBytes: numberFrom(loomEnv("MAX_IMPORT_BYTES"), 5_000_000, 1_000, 50_000_000),
+    maxSearchResults: numberFrom(loomEnv("MAX_SEARCH_RESULTS"), 200, 5, 2_000),
+    maxHttpSessions: numberFrom(loomEnv("MAX_HTTP_SESSIONS"), 64, 1, 512),
+    httpSessionTtlMs: numberFrom(loomEnv("HTTP_SESSION_TTL_MS"), 30 * 60_000, 60_000, 24 * 60 * 60_000),
     blockedGlobs: [...DEFAULT_BLOCKED_GLOBS, ...extraBlockedGlobs],
-    contextDir: contextDirFrom(process.env.CODEXPRO_CONTEXT_DIR),
-    toolCards: boolFrom(toolCardsArg ?? process.env.CODEXPRO_TOOL_CARDS, false),
-    connectionTest: boolFrom(process.env.CODEXPRO_CONNECTION_TEST, false),
-    analysisEnabled: boolFrom(process.env.CODEXPRO_ANALYSIS, true),
+    contextDir: contextDirFrom(process.env.AGENT_LOOM_CONTEXT_DIR ?? loomEnv("CONTEXT_DIR")),
+    toolCards: boolFrom(toolCardsArg ?? process.env.AGENT_LOOM_TOOL_CARDS ?? loomEnv("TOOL_CARDS"), false),
+    connectionTest: boolFrom(loomEnv("CONNECTION_TEST"), false),
+    analysisEnabled: boolFrom(loomEnv("ANALYSIS"), true),
     analysisLimits: {
-      maxInventoryFiles: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_INVENTORY_FILES, DEFAULT_ANALYSIS_LIMITS.maxInventoryFiles, 100, 100_000),
-      maxAnalyzedFiles: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_ANALYZED_FILES, DEFAULT_ANALYSIS_LIMITS.maxAnalyzedFiles, 10, 50_000),
-      maxScannedBytes: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_SCANNED_BYTES, DEFAULT_ANALYSIS_LIMITS.maxScannedBytes, 1_000_000, 512 * 1024 * 1024),
-      maxSymbols: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_SYMBOLS, DEFAULT_ANALYSIS_LIMITS.maxSymbols, 100, 1_000_000),
-      maxRelationships: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_RELATIONSHIPS, DEFAULT_ANALYSIS_LIMITS.maxRelationships, 100, 2_000_000)
+      maxInventoryFiles: numberFrom(loomEnv("ANALYSIS_MAX_INVENTORY_FILES"), DEFAULT_ANALYSIS_LIMITS.maxInventoryFiles, 100, 100_000),
+      maxAnalyzedFiles: numberFrom(loomEnv("ANALYSIS_MAX_ANALYZED_FILES"), DEFAULT_ANALYSIS_LIMITS.maxAnalyzedFiles, 10, 50_000),
+      maxScannedBytes: numberFrom(loomEnv("ANALYSIS_MAX_SCANNED_BYTES"), DEFAULT_ANALYSIS_LIMITS.maxScannedBytes, 1_000_000, 512 * 1024 * 1024),
+      maxSymbols: numberFrom(loomEnv("ANALYSIS_MAX_SYMBOLS"), DEFAULT_ANALYSIS_LIMITS.maxSymbols, 100, 1_000_000),
+      maxRelationships: numberFrom(loomEnv("ANALYSIS_MAX_RELATIONSHIPS"), DEFAULT_ANALYSIS_LIMITS.maxRelationships, 100, 2_000_000)
     }
   };
 }
