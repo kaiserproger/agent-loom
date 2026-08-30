@@ -263,8 +263,12 @@ async function discoverSkillRecords(
   const requestedHomeDir = options.homeDir ?? os.homedir();
   const homeDir = realpathOrUndefined(requestedHomeDir) ?? path.resolve(requestedHomeDir);
   const homes = homePathCandidates(requestedHomeDir, homeDir);
+  const configuredOmpAgentDir = process.env.PI_CODING_AGENT_DIR?.trim();
+  const ompAgentDir = configuredOmpAgentDir ? path.resolve(configuredOmpAgentDir) : path.join(homeDir, ".omp", "agent");
   const workspaceRoots = [
+    path.join(workspaceRoot, ".omp", "skills"),
     path.join(workspaceRoot, ".codex", "skills"),
+    path.join(workspaceRoot, ".agent", "skills"),
     path.join(workspaceRoot, ".agents", "skills"),
     path.join(workspaceRoot, "skills")
   ].flatMap((dir) => {
@@ -278,8 +282,11 @@ async function discoverSkillRecords(
     ...workspaceRoots.map((dir) => ({ dir, source: "workspace" as const })),
     ...(options.includeGlobal
       ? [
-          { dir: path.join(homeDir, ".codex", "skills"), source: "user" as const },
+          { dir: path.join(ompAgentDir, "skills"), source: "user" as const },
+          { dir: path.join(homeDir, ".omp", "skills"), source: "user" as const },
+          { dir: path.join(homeDir, ".agent", "skills"), source: "user" as const },
           { dir: path.join(homeDir, ".agents", "skills"), source: "user" as const },
+          { dir: path.join(homeDir, ".codex", "skills"), source: "user" as const },
           { dir: path.join(homeDir, ".codex", "plugins", "cache"), source: "plugin" as const }
         ]
       : [])

@@ -19,6 +19,9 @@ import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
+import { availableOnDemandModels, availableAgentBackends, agentModelRoles, availableAgentDefinitions, startOnDemandAgent, onDemandAgentStatus, waitOnDemandAgent, stopOnDemandAgent } from "./onDemandAgentOps.js";
+import { buildOmpWebContext, loadOmpWebAgent, loadOmpWebSkill, ompWebStatus } from "./ompWebContext.js";
+import { AGENT_LOOM_VERSION } from "./version.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -324,6 +327,11 @@ function registerToolCompat(
 
 const MINIMAL_TOOL_NAMES = [
   "workspace",
+  "omp",
+  "task",
+  "agents",
+  "pi",
+  "codex",
   "read",
   "write",
   "edit",
@@ -331,7 +339,6 @@ const MINIMAL_TOOL_NAMES = [
   "bash",
   "show_changes"
 ] as const;
-
 const STANDARD_TOOL_NAMES = [
   ...MINIMAL_TOOL_NAMES,
   "tree",
@@ -369,7 +376,12 @@ const FULL_TOOL_NAMES = [
   "export_pro_context",
   "handoff_to_agent",
   "handoff_to_codex",
-  "workspace"
+  "workspace",
+  "omp",
+  "task",
+  "agents",
+  "pi",
+  "codex"
 ] as const;
 
 const CONNECTION_TEST_HIDDEN_TOOLS = new Set<string>([
@@ -382,7 +394,12 @@ const CONNECTION_TEST_HIDDEN_TOOLS = new Set<string>([
   "bash",
   "export_pro_context",
   "handoff_to_agent",
-  "handoff_to_codex"
+  "handoff_to_codex",
+  "omp",
+  "task",
+  "agents",
+  "pi",
+  "codex"
 ]);
 
 function codexSessionToolNames(config: CodexProConfig): string[] {
@@ -481,9 +498,8 @@ function serverInstructions(config: CodexProConfig): string {
     config.bashMode === "off"
       ? "5. Bash is disabled and the bash tool is unavailable. Do not attempt shell commands."
       : "5. Use bash only for meaningful verification commands such as npm test, npm run build, lint, typecheck, or an existing project script.";
-
   return [
-    "Agent Loom connects ChatGPT to multiple explicitly allowed workspaces and persistent Pi/Codex agents through one MCP endpoint and token.",
+    "Agent Loom connects ChatGPT Web to explicitly allowed workspaces and exposes an OMP-native capability layer through one MCP endpoint. ChatGPT Web remains the active model runtime.",
     "",
     "Preferred workflow:",
     "1. Start with workspace(action=list), then workspace(action=use) when this chat needs a different allowed project. Selection is isolated to this MCP session.",
@@ -491,14 +507,16 @@ function serverInstructions(config: CodexProConfig): string {
     "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
     editInstruction,
     bashInstruction,
-    "6. Keep tool calls minimal. Prefer one targeted search plus show_changes instead of repeated broad inspection calls.",
+    "6. After selecting a workspace, call omp(action=context) once. It loads OMP SYSTEM.md/rules and lists OMP-native agents, skills, prompts, slash commands, and tools for this conversation.",
+    "7. Continue working in ChatGPT Web with the direct MCP tools. Call omp(action=skill) or omp(action=agent) when focused OMP instructions are needed; this never launches another model.",
+    "8. task(action=run) is optional one-shot compatibility for bounded read-only workers. It uses backend=auto: OMP first, then Pi, then Codex. The global supervisor enforces max_concurrency=1 and queues up to eight generic tasks.",
     config.codexSessions !== "off"
-      ? `7. Codex session history access is enabled in ${config.codexSessions} mode. Use it only when the user asks for local Codex session history.`
+      ? `9. Codex session history access is enabled in ${config.codexSessions} mode. Use it only when the user asks for local Codex session history.`
       : "",
     config.requireBashSession && config.bashSessionId
-      ? `8. Bash session guard is enabled. Every bash call must include session_id="${config.bashSessionId}".`
+      ? `10. Bash session guard is enabled. Every bash call must include session_id="${config.bashSessionId}".`
       : config.bashSessionId
-        ? `8. Bash session label for this server is "${config.bashSessionId}".`
+        ? `10. Bash session label for this server is "${config.bashSessionId}".`
         : "",
     "",
     `Current modes: tool=${config.toolMode}, bash=${config.bashMode}, write=${config.writeMode}.`
@@ -922,13 +940,14 @@ const READ_ONLY_ANNOTATIONS = { readOnlyHint: true, openWorldHint: false, destru
 const SESSION_READ_ANNOTATIONS = { readOnlyHint: true, openWorldHint: false, destructiveHint: false, idempotentHint: false };
 const LOCAL_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, destructiveHint: true, idempotentHint: false };
 const BASH_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true, destructiveHint: true, idempotentHint: false };
+const AGENT_TASK_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true, destructiveHint: false, idempotentHint: false };
 const HANDOFF_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, destructiveHint: false, idempotentHint: false };
 
 export function createAgentLoomServer(config: CodexProConfig): McpServer {
   const workspaces = new WorkspaceManager(config);
   const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
-  const server = new McpServer({ name: "Agent Loom", version: "0.1.0" }, { instructions: serverInstructions(config) });
+  const server = new McpServer({ name: "Agent Loom", version: AGENT_LOOM_VERSION }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
   registerToolCardResource(server, config);
 
@@ -2070,7 +2089,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     "workspace",
     {
       title: "Workspace Router",
-      description: "Route this chat to an allowed project. Use discover when a requested directory is not itself a Git repository; then open the relevant discovered repository before Git operations or starting Pi/Codex pools. Selection belongs only to this MCP session, so other chats may select different projects through the same endpoint.",
+      description: "Route this chat to an allowed project. Use discover when a requested directory is not itself a Git repository. Selection belongs only to this MCP session, so other chats may select different projects through the same endpoint.",
       inputSchema: {
         action: z.enum(["list", "discover", "open", "use", "current"]),
         root: z.string().optional().describe("Allowed directory for action=open or action=discover."),
@@ -2088,7 +2107,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
         const isGitRoot = repositories.some((repository) => repository.root === opened.root);
         const guidance = isGitRoot || repositories.length === 0
           ? ""
-          : `\n\nThis directory is not a Git repository. Before Git operations or agent pools, open one of these discovered repositories:\n${repositories.map((repository) => `- ${repository.root}`).join("\n")}`;
+          : `\n\nThis directory is not a Git repository. Before Git operations, open one of these discovered repositories:\n${repositories.map((repository) => `- ${repository.root}`).join("\n")}`;
         return textResult(`# Workspace Selected\n\n${opened.id} — ${opened.root}${guidance}`, { workspace: opened, selected_workspace_id: opened.id, is_git_root: isGitRoot, repositories });
       }
       if (args.action === "discover") {
@@ -2115,6 +2134,212 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     }
   );
 
+  const registerOnDemandRuntime = (runtime: "pi" | "codex") => registerCodexTool(
+    config,
+    server,
+    runtime,
+    {
+      title: runtime === "pi" ? "On-demand Pi" : "On-demand Codex",
+      description: `Run exactly one ${runtime} task on demand in a sanitized read-only workspace mirror. No h5i, pool, forum, worktree, or idle dispatcher is created. Global concurrency is one process. action=run returns immediately; use wait/status or stop. Native write mode is rejected until a guarded write adapter is available.`,
+      inputSchema: {
+        action: z.enum(["models", "run", "wait", "status", "stop"]),
+        workspace_id: z.string().optional().describe("Stable workspace id. Omit to use this MCP session's selected workspace."),
+        task: z.string().max(100_000).optional().describe("One bounded task for action=run."),
+        task_id: z.string().regex(/^\d{14}-[a-f0-9]{8}$/).optional().describe("Task id for wait/status/stop."),
+        mode: z.enum(["review", "write"]).optional().describe("Default: review."),
+        model: z.string().max(500).optional(),
+        thinking: z.enum(["low", "medium", "high"]).optional(),
+        timeout_seconds: z.number().int().min(30).max(1200).optional(),
+        wait_seconds: z.number().int().min(0).max(60).optional()
+      },
+      annotations: AGENT_TASK_ANNOTATIONS
+    },
+    async (args) => {
+      if (args.action === "models") {
+        if (runtime !== "pi") throw new CodexProError("Codex does not expose a local model inventory.");
+        const models = availableOnDemandModels(runtime);
+        return textResult(`# Available Pi Models\n\n${models.map((model) => `- ${model}`).join("\n")}`, { runtime, models });
+      }
+      if (args.action === "status") {
+        const result = await onDemandAgentStatus(args.task_id);
+        return textResult(`# On-demand ${runtime} Status\n\nState: ${result.state}${result.task_id ? `\nTask: ${result.task_id}` : ""}`, result);
+      }
+      if (args.action === "wait") {
+        if (!args.task_id) throw new CodexProError("task_id is required for action=wait.");
+        const result = await waitOnDemandAgent(args.task_id, args.wait_seconds ?? 60);
+        return textResult(`# On-demand ${runtime} Result\n\nState: ${result.state}\n\n${result.stdout_tail ?? ""}${result.stderr_tail ? `\n\nSTDERR:\n${result.stderr_tail}` : ""}`, result);
+      }
+      if (args.action === "stop") {
+        const result = await stopOnDemandAgent(args.task_id);
+        return textResult(`# On-demand ${runtime} Stop\n\nState: ${result.state}`, result);
+      }
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      if (args.mode === "write" && config.writeMode !== "workspace") throw new CodexProError("mode=write requires Agent Loom write mode=workspace.");
+      const result = await startOnDemandAgent(workspace, { runtime, task: args.task, mode: args.mode, model: args.model, thinking: args.thinking, timeout_seconds: args.timeout_seconds, bash_mode: config.bashMode, blocked_globs: config.blockedGlobs, queue: false });
+      return textResult(`# On-demand ${runtime} Started\n\nTask: ${result.task_id}\nWorkspace: ${result.workspace_root}\nNo persistent worker was created.`, { ...result });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "omp",
+    {
+      title: "OMP Web Capabilities",
+      description: "Expose OMP-native agents, skills, rules, prompts, slash-command definitions, and the OMP-native subset of workspace tools to this ChatGPT Web conversation. The native_tools field excludes separate task/pi/codex, handoff, and session tools; this capability layer does not launch another model or OMP session.",
+      inputSchema: {
+        action: z.enum(["status", "context", "skill", "agent"]),
+        workspace_id: z.string().optional().describe("Stable workspace id. Omit to use the workspace selected in this MCP session."),
+        skill_name: z.string().max(200).optional().describe("Exact OMP skill name for action=skill."),
+        agent_name: z.string().max(200).optional().describe("Exact OMP agent name for action=agent."),
+        source: z.enum(["workspace", "user", "plugin", "other"]).optional().describe("Optional skill source constraint.")
+      },
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async (args) => {
+      if (args.action === "status") {
+        const result = ompWebStatus(config);
+        return textResult("# OMP Web Capabilities\n\nChatGPT Web is the active model runtime. Agent Loom does not launch a second OMP/Pi/Codex model for this tool.", result);
+      }
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      if (args.action === "context") {
+        const result = await buildOmpWebContext(config, workspace);
+        return textResult(result.text, { ...result });
+      }
+      if (args.action === "skill") {
+        if (!args.skill_name?.trim()) throw new CodexProError("skill_name is required for omp action=skill.");
+        const loaded = await loadOmpWebSkill(workspace, args.skill_name, args.source);
+        const truncated = loaded.truncated ? "\n\n[truncated: increase max_bytes with load_skill if more context is required]" : "";
+        const text = `# OMP Skill\n\nName: ${loaded.skill.name}\nSource: ${loaded.skill.source}\nPath: ${loaded.skill.path}\nBytes: ${loaded.bytes}/${loaded.totalBytes}\n\n\`\`\`markdown\n${loaded.text}${truncated}\n\`\`\``;
+        return textResult(text, {
+          runtime: "chatgpt-web-native",
+          workspace_id: workspace.id,
+          root: workspace.root,
+          skill: loaded.skill,
+          bytes: loaded.bytes,
+          total_bytes: loaded.totalBytes,
+          truncated: loaded.truncated,
+          text: loaded.text
+        });
+      }
+      if (!args.agent_name?.trim()) throw new CodexProError("agent_name is required for omp action=agent.");
+      const agent = await loadOmpWebAgent(workspace, args.agent_name);
+      return textResult(`# OMP Agent\n\nName: ${agent.name}\nDescription: ${agent.description}\nMode: ${agent.mode}\nTools: ${agent.tools.join(", ") || "none"}\nSpawns: ${agent.spawns.join(", ") || "none"}\n\n## System prompt\n\n${agent.system_prompt}`, {
+        runtime: "chatgpt-web-native",
+        workspace_id: workspace.id,
+        root: workspace.root,
+        agent
+      });
+    }
+  );
+  registerCodexTool(
+    config,
+    server,
+    "agents",
+    {
+      title: "Agent Inventory",
+      description: "List OMP-compatible task agents, platform backends, and cheap-model routing. Read-only; use this before task(action=run) when selecting a workflow.",
+      inputSchema: {
+        action: z.enum(["list", "models"]).default("list"),
+        workspace_id: z.string().optional().describe("Stable workspace id. Omit to use this MCP session's selected workspace."),
+        backend: z.enum(["auto", "omp", "pi", "codex"]).optional()
+      },
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async (args) => {
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      if (args.action === "models") {
+        const backends = availableAgentBackends();
+        const backend = args.backend && args.backend !== "auto" ? args.backend : backends[0];
+        const models = backend ? availableOnDemandModels(backend) : [];
+        return textResult(`# Agent Models\n\nBackend: ${backend ?? "none"}\n\n${models.map((model) => `- ${model}`).join("\n") || "- No local model inventory available."}`, {
+          backend: backend ?? null,
+          backends,
+          models,
+          model_roles: agentModelRoles()
+        });
+      }
+      const inventory = await availableAgentDefinitions(workspace.root);
+      const agents = inventory.agents.map((agent) => ({
+        name: agent.name,
+        description: agent.description,
+        mode: agent.mode,
+        model: agent.model ?? null,
+        thinking: agent.thinking ?? null,
+        tools: agent.tools,
+        spawns: agent.spawns,
+        source: agent.source,
+        file_path: agent.filePath ?? null
+      }));
+      return textResult(`# Agent Inventory\n\n${agents.map((agent) => `- ${agent.name}: ${agent.description}`).join("\n")}`, {
+        agents,
+        warnings: inventory.warnings,
+        backends: availableAgentBackends(),
+        model_roles: agentModelRoles(),
+        max_concurrency: 1,
+        queue_depth: 8
+      });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "task",
+    {
+      title: "Run Agent Task",
+      description: "Run one OMP-compatible read-only agent task in a sanitized workspace mirror with backend=auto (OMP, then Pi, then Codex), bounded queueing, and structured task artifacts. Use task(action=run) for evidence or implementation planning, then apply approved edits through guarded Agent Loom write/edit tools.",
+      inputSchema: {
+        action: z.enum(["run", "wait", "status", "stop"]),
+        workspace_id: z.string().optional().describe("Stable workspace id for action=run. Omit to use this MCP session's selected workspace."),
+        agent: z.string().max(100).optional().describe("Agent role from agents(action=list), for example scout, reviewer, security-reviewer, or task."),
+        backend: z.enum(["auto", "omp", "pi", "codex"]).optional().describe("Default: auto."),
+        task: z.string().max(100_000).optional().describe("One bounded task for action=run."),
+        task_id: z.string().regex(/^\d{14}-[a-f0-9]{8}$/).optional().describe("Task id for wait/status/stop."),
+        mode: z.enum(["review", "write"]).optional().describe("Default: review."),
+        model: z.string().max(500).optional().describe("Optional backend model selector; role defaults use GLM-5.3-Flash for fast work and GPT-5.6-Luna for task/review work."),
+        thinking: z.enum(["low", "medium", "high"]).optional(),
+        timeout_seconds: z.number().int().min(30).max(1200).optional(),
+        wait_seconds: z.number().int().min(0).max(60).optional()
+      },
+      annotations: AGENT_TASK_ANNOTATIONS
+    },
+    async (args) => {
+      if (args.action === "status") {
+        const result = await onDemandAgentStatus(args.task_id);
+        return textResult(`# Agent Task Status\n\nState: ${result.state}${result.task_id ? `\nTask: ${result.task_id}` : ""}`, { ...result, workflow: "task", max_concurrency: 1 });
+      }
+      if (args.action === "wait") {
+        if (!args.task_id) throw new CodexProError("task_id is required for action=wait.");
+        const result = await waitOnDemandAgent(args.task_id, args.wait_seconds ?? 60);
+        return textResult(`# Agent Task Result\n\nState: ${result.state}\n\n${result.output_summary ?? result.stdout_tail ?? ""}${result.stderr_tail ? `\n\nSTDERR:\n${result.stderr_tail}` : ""}`, { ...result, workflow: "task", max_concurrency: 1 });
+      }
+      if (args.action === "stop") {
+        const result = await stopOnDemandAgent(args.task_id);
+        return textResult(`# Agent Task Stop\n\nState: ${result.state}`, { ...result, workflow: "task", max_concurrency: 1 });
+      }
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      const mode = args.mode ?? "review";
+      if (mode === "write" && config.writeMode !== "workspace") throw new CodexProError("mode=write requires Agent Loom write mode=workspace.");
+      const result = await startOnDemandAgent(workspace, {
+        backend: args.backend ?? "auto",
+        agent: args.agent ?? "task",
+        task: args.task,
+        mode,
+        model: args.model,
+        thinking: args.thinking,
+        timeout_seconds: args.timeout_seconds,
+        bash_mode: config.bashMode,
+        blocked_globs: config.blockedGlobs,
+        queue: true
+      });
+      const queuePosition = "queue_position" in result ? `\nQueue position: ${String(result.queue_position)}` : "";
+      return textResult(`# Agent Task ${result.state === "queued" ? "Queued" : "Started"}\n\nTask: ${result.task_id}\nAgent: ${result.agent}\nBackend: ${result.backend}\nWorkspace: ${result.workspace_root}${queuePosition}\n\nUse task(action=wait, task_id="${result.task_id}") for the result.`, { ...result, workflow: "task", max_concurrency: 1, queue_depth: 8 });
+    }
+  );
+
+  registerOnDemandRuntime("pi");
+  registerOnDemandRuntime("codex");
 
   registerCodexTool(
     config,

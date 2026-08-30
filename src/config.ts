@@ -43,7 +43,7 @@ export interface CodexProConfig {
   analysisLimits: AnalysisLimits;
 }
 
-const DEFAULT_BLOCKED_GLOBS = [
+export const DEFAULT_BLOCKED_GLOBS = [
   ".git",
   ".git/**",
   "**/.git/**",

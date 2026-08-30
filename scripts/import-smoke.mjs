@@ -253,13 +253,13 @@ try {
         }
       }
       const opened = await client.request('tools/call', {
-        name: 'open_current_workspace',
-        arguments: { include_tree: false }
+        name: 'workspace',
+        arguments: { action: 'open', root }
       });
       const viaTool = await client.request('tools/call', {
         name: 'import_file',
         arguments: {
-          workspace_id: opened.structuredContent.workspace_id,
+          workspace_id: opened.structuredContent.workspace.id,
           file: {
             download_url: fixture.url,
             file_id: 'file_smoke_tool',

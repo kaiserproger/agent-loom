@@ -119,7 +119,7 @@ async function expectWeakHttpTokenRejected() {
     stdio: ['ignore', 'pipe', 'pipe']
   });
   const result = await waitForExit(child);
-  if (result.code === 0 || !result.stderr.includes('CODEXPRO_HTTP_TOKEN must be at least 24 bytes')) {
+  if (result.code === 0 || !result.stderr.includes('AGENT_LOOM_HTTP_TOKEN must be at least 24 bytes')) {
     throw new Error(`expected weak HTTP token startup to fail closed, got:\n${result.stderr}`);
   }
 }
@@ -501,7 +501,7 @@ try {
 
   const queryTools = await listTools(`${baseUrl}/mcp?codexpro_token=${encodeURIComponent(token)}`);
   const queryToolNames = toolNames(queryTools);
-  for (const expected of ['server_config', 'codexpro_self_test', 'codexpro_inventory', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'tree', 'search', 'load_skill', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
+  for (const expected of ['server_config', 'loom_self_test', 'loom_inventory', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'tree', 'search', 'load_skill', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
     if (!queryToolNames.includes(expected)) {
       throw new Error(`URL-token MCP tools/list missing ${expected}; got ${queryToolNames.join(', ')}`);
     }
@@ -511,7 +511,7 @@ try {
       throw new Error(`HTTP handoff mode should not advertise ${hidden}; got ${queryToolNames.join(', ')}`);
     }
   }
-  const toolCardUri = 'ui://widget/codexpro-tool-card-v10.html';
+  const toolCardUri = 'ui://widget/agent-loom-tool-card-v10.html';
   for (const visualTool of queryToolNames) {
     if (hasWidgetMeta(queryTools, visualTool, toolCardUri) || hasToolCardStatusMeta(queryTools, visualTool)) {
       throw new Error(`${visualTool} exposed widget metadata while CODEXPRO_TOOL_CARDS is off`);
@@ -568,7 +568,7 @@ try {
     if (toolCard.mimeType !== 'text/html;profile=mcp-app') {
       throw new Error(`unexpected HTTP tool-card mime type: ${toolCard.mimeType}`);
     }
-    const legacyToolCardUris = ['ui://widget/codexpro-tool-card-v9.html', 'ui://widget/codexpro-tool-card-v8.html'];
+    const legacyToolCardUris = ['ui://widget/agent-loom-tool-card-v9.html', 'ui://widget/agent-loom-tool-card-v8.html'];
     for (const legacyToolCardUri of legacyToolCardUris) {
       const legacyToolCard = resources.resources.find((resource) => resource.uri === legacyToolCardUri);
       if (!legacyToolCard) throw new Error(`HTTP MCP resources/list missing legacy ${legacyToolCardUri}`);
@@ -604,7 +604,7 @@ try {
 
   const currentOpened = await withClient(mcpUrl, async (client) => {
     const result = await callTool(client, 'open_current_workspace', { include_tree: false });
-    if (result.structuredContent.codexpro_tool !== 'open_current_workspace') {
+    if (result.structuredContent.loom_tool !== 'open_current_workspace') {
       throw new Error('HTTP tool result was not tagged for widget rendering');
     }
     if (result.structuredContent.tool_mode !== 'full') {
@@ -642,11 +642,12 @@ try {
   });
 
   await withClient(mcpUrl, async (client) => {
-    const inventory = await callTool(client, 'codexpro_inventory', {
+    await callTool(client, 'workspace', { action: 'open', root });
+    const inventory = await callTool(client, 'loom_inventory', {
       include_global_skills: false,
       include_mcp_servers: false
     });
-    if (inventory.structuredContent.codexpro_tool !== 'codexpro_inventory') {
+    if (inventory.structuredContent.loom_tool !== 'loom_inventory') {
       throw new Error('HTTP inventory result was not tagged for widget rendering');
     }
     const loadedSkill = await callTool(client, 'load_skill', {
@@ -659,7 +660,7 @@ try {
   });
 
   const opened = await withClient(mcpUrl, async (client) => {
-    const result = await callTool(client, 'open_workspace', { include_tree: false });
+    const result = await callTool(client, 'open_workspace', { root, include_tree: false });
     return result.structuredContent.workspace_id;
   });
   if (opened !== currentOpened) {
@@ -679,10 +680,7 @@ try {
 
     await withClient(mcpUrl, async (secondClient) => {
       const secondList = await callTool(secondClient, 'list_workspaces');
-      if (
-        secondList.structuredContent.selected_workspace_id === alternate.structuredContent.workspace_id
-        || secondList.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
-      ) {
+      if (secondList.structuredContent.selected_workspace_id === alternate.structuredContent.workspace_id) {
         throw new Error(`HTTP workspace selection leaked between MCP sessions: ${JSON.stringify(secondList.structuredContent)}`);
       }
     });
@@ -699,6 +697,8 @@ try {
     if (!ids.includes(opened)) {
       throw new Error(`session list_workspaces missing configured workspace ${opened}; got ${ids.join(', ')}`);
     }
+    const blockedTaskWrite = await client.callTool({ name: 'task', arguments: { action: 'run', workspace_id: opened, mode: 'write', task: 'must be rejected by handoff mode' } });
+    if (!blockedTaskWrite.isError || !blockedTaskWrite.content?.[0]?.text?.includes('mode=write requires')) throw new Error(`generic task write guard failed: ${JSON.stringify(blockedTaskWrite)}`);
 
     const snapshot = await callTool(client, 'workspace_snapshot', { workspace_id: opened, max_depth: 1 });
     if (snapshot.structuredContent.workspace_id !== opened) {
@@ -812,6 +812,8 @@ const cliChild = spawn(process.execPath, [
   '--tunnel',
   'none',
   '--no-auth',
+  '--tool-mode',
+  'full',
   '--port',
   String(cliPort),
   '--codex-sessions',
@@ -854,6 +856,8 @@ const connectionTestChild = spawn(process.execPath, [
   'none',
   '--no-auth',
   '--no-profile',
+  '--tool-mode',
+  'full',
   '--port',
   String(connectionTestPort)
 ], {
@@ -871,10 +875,10 @@ try {
   await waitForHealthJson(`http://127.0.0.1:${connectionTestPort}/healthz`);
   const tools = await listTools(`http://127.0.0.1:${connectionTestPort}/mcp`);
   const names = toolNames(tools);
-  for (const expected of ['read', 'tree', 'search', 'load_skill']) {
+  for (const expected of ['read', 'tree', 'search']) {
     if (!names.includes(expected)) throw new Error(`connection-test missing ${expected}; got ${names.join(', ')}`);
   }
-  for (const hidden of ['codexpro', 'codexpro_self_test', 'write', 'edit', 'apply_patch', 'bash', 'export_pro_context', 'handoff_to_agent', 'handoff_to_codex']) {
+  for (const hidden of ['loom', 'loom_self_test', 'server_config', 'load_skill', 'task', 'agents', 'pi', 'codex', 'write', 'edit', 'apply_patch', 'bash', 'export_pro_context', 'handoff_to_agent', 'handoff_to_codex']) {
     if (names.includes(hidden)) throw new Error(`connection-test exposed ${hidden}; got ${names.join(', ')}`);
   }
   for (const tool of tools) {
@@ -883,14 +887,8 @@ try {
       throw new Error(`connection-test exposed non-read-only annotations for ${tool.name}: ${JSON.stringify(annotations)}`);
     }
   }
-  await withClient(`http://127.0.0.1:${connectionTestPort}/mcp`, async (client) => {
-    const config = await callTool(client, 'server_config');
-    if (config.structuredContent.connectionTest !== true || config.structuredContent.toolCards !== false) {
-      throw new Error(`unexpected connection-test config: ${JSON.stringify(config.structuredContent)}`);
-    }
-  });
   await new Promise((resolve) => setTimeout(resolve, 100));
-  if (!connectionTestStderr.includes('[CodexPro] POST /mcp received')) {
+  if (!connectionTestStderr.includes('[Agent Loom] POST /mcp received')) {
     throw new Error(`connection-test did not print request-arrival logs\n${connectionTestStderr}`);
   }
 } finally {

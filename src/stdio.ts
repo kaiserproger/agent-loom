@@ -2,8 +2,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
 import { createAgentLoomServer } from "./server.js";
-
-const AGENT_LOOM_VERSION = "0.1.0";
+import { AGENT_LOOM_VERSION } from "./version.js";
 
 function printHelp(): void {
   console.log(`Agent Loom MCP stdio server

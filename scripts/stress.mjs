@@ -143,16 +143,16 @@ async function runFullModeStress(root) {
   try {
     const tools = await client.request('tools/list', {});
     const names = tools.tools.map((tool) => tool.name);
-    for (const name of ['codexpro', 'codexpro_inventory', 'open_current_workspace', 'search', 'load_skill', 'wait_for_handoff', 'export_pro_context', 'bash']) {
+    for (const name of ['loom', 'loom_inventory', 'open_current_workspace', 'search', 'load_skill', 'wait_for_handoff', 'export_pro_context', 'bash']) {
       assert(names.includes(name), `full mode missing ${name}`);
     }
 
     const config = await client.request('tools/call', { name: 'server_config', arguments: {} });
     assert(config.structuredContent.toolMode === 'full', `expected full tool mode, got ${config.structuredContent.toolMode}`);
-    assert(config.structuredContent.registeredTools.includes('codexpro'), 'server_config missing codexpro supertool');
+    assert(config.structuredContent.registeredTools.includes('loom'), 'server_config missing codexpro supertool');
 
     const superActions = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: { action: 'list_actions' }
     });
     assert(superActions.structuredContent.actions.includes('search'), 'supertool actions missing search');
@@ -163,7 +163,7 @@ async function runFullModeStress(root) {
     const ws = opened.structuredContent.workspace_id;
 
     const superOpened = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: { action: 'open', args: { include_tree: false } }
     });
     assert(superOpened.structuredContent.wrapped_tool === 'open_current_workspace', 'supertool open alias did not wrap open_current_workspace');
@@ -183,7 +183,7 @@ async function runFullModeStress(root) {
     assert(loaded.structuredContent.text.includes('# Stress Skill'), 'load_skill did not return skill body');
 
     const inventory = await client.request('tools/call', {
-      name: 'codexpro_inventory',
+      name: 'loom_inventory',
       arguments: { workspace_id: ws, include_global_skills: false, include_mcp_servers: false, max_skills: 140 }
     });
     assert(inventory.structuredContent.skill_count === 140, `expected 140 inventory skills, got ${inventory.structuredContent.skill_count}`);
@@ -226,16 +226,16 @@ async function runFullModeStress(root) {
     }
 
     const superRead = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: { action: 'read', args: { workspace_id: ws, path: 'demo.txt', start_line: 1, end_line: 3 } }
     });
-    assert(superRead.structuredContent.codexpro_tool === 'read' && superRead.structuredContent.wrapped_tool === 'read' && superRead.structuredContent.text.includes('--flag root'), 'supertool read failed');
+    assert(superRead.structuredContent.loom_tool === 'read' && superRead.structuredContent.wrapped_tool === 'read' && superRead.structuredContent.text.includes('--flag root'), 'supertool read failed');
 
     const superSearch = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: { action: 'search', args: { workspace_id: ws, query: 'stress-needle-3', path: 'many', max_results: 20 } }
     });
-    assert(superSearch.structuredContent.codexpro_tool === 'search' && superSearch.structuredContent.wrapped_tool === 'search', 'supertool search did not report wrapped tool');
+    assert(superSearch.structuredContent.loom_tool === 'search' && superSearch.structuredContent.wrapped_tool === 'search', 'supertool search did not report wrapped tool');
     assert(superSearch.structuredContent.matches.length === 20, `supertool search returned ${superSearch.structuredContent.matches.length} matches`);
 
     const safePwd = await client.request('tools/call', {
@@ -254,10 +254,10 @@ async function runFullModeStress(root) {
 
     const newlineSuperTarget = path.join(root, 'newline-supertool-owned');
     const blockedSuperNewline = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: { action: 'bash', args: { workspace_id: ws, command: 'pwd\ntouch newline-supertool-owned' } }
     });
-    assert(blockedSuperNewline.isError === true && blockedSuperNewline.structuredContent.codexpro_tool === 'bash', 'supertool safe bash newline error was not tagged as bash');
+    assert(blockedSuperNewline.isError === true && blockedSuperNewline.structuredContent.loom_tool === 'bash', 'supertool safe bash newline error was not tagged as bash');
     assert(!(await pathExists(newlineSuperTarget)), 'supertool safe bash newline command created a file');
 
     const blockedOutputFlag = await client.request('tools/call', {
@@ -268,10 +268,10 @@ async function runFullModeStress(root) {
     assert(!(await pathExists(path.join(root, 'safe-bash-owned.patch'))), 'safe bash git output path created a file');
 
     const blockedDollarExpansion = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: { action: 'bash', args: { workspace_id: ws, command: "git diff $'--output=supertool-owned.patch'" } }
     });
-    assert(blockedDollarExpansion.isError === true && blockedDollarExpansion.structuredContent.codexpro_tool === 'bash', 'supertool safe bash allowed dollar-quoted expansion');
+    assert(blockedDollarExpansion.isError === true && blockedDollarExpansion.structuredContent.loom_tool === 'bash', 'supertool safe bash allowed dollar-quoted expansion');
     assert(!(await pathExists(path.join(root, 'supertool-owned.patch'))), 'supertool dollar-quoted git output path created a file');
 
     const blockedFindFprint0 = await client.request('tools/call', {
@@ -316,10 +316,10 @@ async function runFullModeStress(root) {
     assert(String(completed.structuredContent.status_excerpt ?? '').includes('PASS stress handoff'), 'wait_for_handoff missed status excerpt');
 
     const superWait = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: { action: 'handoff_poll', args: { workspace_id: ws, plan_hash: 'stress-plan', since_iteration: 6, max_wait_seconds: 1, poll_ms: 250 } }
     });
-    assert(superWait.structuredContent.codexpro_tool === 'wait_for_handoff' && superWait.structuredContent.wrapped_tool === 'wait_for_handoff' && superWait.structuredContent.succeeded === true, 'supertool handoff_poll failed');
+    assert(superWait.structuredContent.loom_tool === 'wait_for_handoff' && superWait.structuredContent.wrapped_tool === 'wait_for_handoff' && superWait.structuredContent.succeeded === true, 'supertool handoff_poll failed');
 
     const mismatch = await client.request('tools/call', {
       name: 'wait_for_handoff',
@@ -351,7 +351,7 @@ async function runFullModeStress(root) {
     assert(exactExport.structuredContent.files_included.length === 1 && exactExport.structuredContent.files_included[0] === 'demo.txt', `exact Pro export included wrong files: ${JSON.stringify(exactExport.structuredContent.files_included)}`);
 
     const superExport = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: {
         action: 'pro_export',
         args: {
@@ -366,7 +366,7 @@ async function runFullModeStress(root) {
         }
       }
     });
-    assert(superExport.structuredContent.codexpro_tool === 'export_pro_context' && superExport.structuredContent.wrapped_tool === 'export_pro_context', 'supertool pro_export did not wrap export_pro_context');
+    assert(superExport.structuredContent.loom_tool === 'export_pro_context' && superExport.structuredContent.wrapped_tool === 'export_pro_context', 'supertool pro_export did not wrap export_pro_context');
     assert(superExport.structuredContent.files_included.length === 1 && superExport.structuredContent.files_included[0] === 'demo.txt', `supertool Pro export included wrong files: ${JSON.stringify(superExport.structuredContent.files_included)}`);
 
     const hiddenGlobExport = await client.request('tools/call', {
@@ -384,7 +384,7 @@ async function runFullModeStress(root) {
     });
     assert(hiddenGlobExport.structuredContent.files_included.includes('.github/workflows/ci.yml'), `Pro export extra_globs missed hidden path: ${JSON.stringify(hiddenGlobExport.structuredContent.files_included)}`);
 
-    const selfTest = await client.request('tools/call', { name: 'codexpro_self_test', arguments: { workspace_id: ws } });
+    const selfTest = await client.request('tools/call', { name: 'loom_self_test', arguments: { workspace_id: ws } });
     assert(selfTest.structuredContent.status !== 'fail', `codexpro_self_test failed: ${JSON.stringify(selfTest.structuredContent.checks)}`);
   } finally {
     client.close();
@@ -403,7 +403,7 @@ async function runGlobalSkillStress(root) {
     client = await initClient(isolatedRoot);
     const opened = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
     const inventory = await client.request('tools/call', {
-      name: 'codexpro_inventory',
+      name: 'loom_inventory',
       arguments: { workspace_id: opened.structuredContent.workspace_id, include_mcp_servers: false, max_skills: 500 }
     });
     const skill = inventory.structuredContent.skills.find((item) => item.name === name);
@@ -440,7 +440,7 @@ async function runRedactionStress() {
     const opened = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
     for (const request of [
       { name: 'read', arguments: { workspace_id: opened.structuredContent.workspace_id, path: 'tokens.txt' } },
-      { name: 'codexpro', arguments: { action: 'read', args: { workspace_id: opened.structuredContent.workspace_id, path: 'tokens.txt' } } }
+      { name: 'loom', arguments: { action: 'read', args: { workspace_id: opened.structuredContent.workspace_id, path: 'tokens.txt' } } }
     ]) {
       const result = await client.request('tools/call', request);
       const payload = JSON.stringify(result);
@@ -475,15 +475,15 @@ async function runMcpInventoryStress() {
   try {
     const opened = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
     const inventory = await client.request('tools/call', {
-      name: 'codexpro_inventory',
+      name: 'loom_inventory',
       arguments: { workspace_id: opened.structuredContent.workspace_id, include_global_skills: false, include_mcp_servers: true }
     });
     const superInventory = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: { action: 'inventory', args: { workspace_id: opened.structuredContent.workspace_id, include_global_skills: false, include_mcp_servers: true } }
     });
     assert(inventory.structuredContent.mcp_server_count === 120, `MCP inventory was not capped: ${inventory.structuredContent.mcp_server_count}`);
-    assert(superInventory.structuredContent.codexpro_tool === 'codexpro_inventory' && superInventory.structuredContent.mcp_server_count === 120, 'supertool MCP inventory was not capped');
+    assert(superInventory.structuredContent.loom_tool === 'loom_inventory' && superInventory.structuredContent.mcp_server_count === 120, 'supertool MCP inventory was not capped');
     const payload = JSON.stringify([inventory, superInventory]);
     for (const leaked of [fakeHome, '~/.codex', '~/.cursor', '.cursor/mcp.json', '.codex/config.toml', 'secret-command', 'secret-arg']) {
       assert(!payload.includes(leaked), `MCP inventory leaked ${leaked}`);
@@ -501,50 +501,35 @@ async function runSupertoolModeStress(root) {
   try {
     const tools = await client.request('tools/list', {});
     const names = tools.tools.map((tool) => tool.name);
-    assert(names.includes('codexpro'), 'minimal mode missing codexpro supertool');
+    assert(!names.includes('loom'), 'minimal mode exposed loom supertool');
+    assert(names.includes('workspace') && names.includes('read') && names.includes('pi') && names.includes('codex'), 'minimal mode missed direct tools');
     assert(!names.includes('bash'), 'minimal no-bash mode exposed bash');
     assert(!names.includes('search'), 'minimal mode exposed search');
 
-    const actions = await client.request('tools/call', { name: 'codexpro', arguments: { action: 'list_actions' } });
-    assert(actions.structuredContent.actions.includes('read'), 'minimal supertool actions missing read');
-    assert(!actions.structuredContent.actions.includes('bash'), 'minimal no-bash supertool actions exposed bash');
-    assert(!actions.structuredContent.actions.includes('search'), 'minimal supertool actions exposed search');
-
     const opened = await client.request('tools/call', {
-      name: 'codexpro',
-      arguments: { action: 'open', args: { include_tree: false } }
+      name: 'workspace',
+      arguments: { action: 'open', root }
     });
+    const workspaceId = opened.structuredContent.workspace.id;
     const read = await client.request('tools/call', {
-      name: 'codexpro',
-      arguments: { action: 'read', args: { workspace_id: opened.structuredContent.workspace_id, path: 'demo.txt', start_line: 1, end_line: 2 } }
+      name: 'read',
+      arguments: { workspace_id: workspaceId, path: 'demo.txt', start_line: 1, end_line: 2 }
     });
-    assert(read.structuredContent.codexpro_tool === 'read' && read.structuredContent.wrapped_tool === 'read' && read.structuredContent.text.includes('alpha'), 'minimal supertool read failed');
-
-    const blockedSearch = await client.request('tools/call', {
-      name: 'codexpro',
-      arguments: { action: 'search', args: { workspace_id: opened.structuredContent.workspace_id, query: 'alpha' } }
-    });
-    assert(blockedSearch.isError === true && String(blockedSearch.structuredContent.error).includes('not available'), 'supertool allowed disabled search action');
+    assert(read.structuredContent.loom_tool === 'read' && read.structuredContent.text.includes('alpha'), 'minimal direct read failed');
 
     const missingRead = await client.request('tools/call', {
-      name: 'codexpro',
-      arguments: { action: 'read', args: { workspace_id: opened.structuredContent.workspace_id, path: 'missing.txt' } }
+      name: 'read',
+      arguments: { workspace_id: workspaceId, path: 'missing.txt' }
     });
-    assert(missingRead.isError === true && missingRead.structuredContent.codexpro_tool === 'read' && missingRead.structuredContent.wrapped_tool === 'read', 'supertool failed read was not tagged as read');
+    assert(missingRead.isError === true && missingRead.structuredContent.loom_tool === 'read', 'minimal failed read was not tagged as read');
 
     const malformedRead = await client.request('tools/call', {
-      name: 'codexpro',
-      arguments: { action: 'read', args: { workspace_id: opened.structuredContent.workspace_id, path: ['demo.txt'] } }
+      name: 'read',
+      arguments: { workspace_id: workspaceId, path: ['demo.txt'] }
     });
-    const malformedReadError = String(malformedRead.structuredContent.error ?? '');
-    assert(malformedRead.isError === true && malformedRead.structuredContent.codexpro_tool === 'read' && malformedRead.structuredContent.wrapped_tool === 'read', 'supertool malformed read was not tagged as read');
-    assert(malformedReadError.includes('Invalid arguments for read') && !malformedReadError.includes('TypeError'), `supertool malformed read leaked raw handler error: ${malformedReadError}`);
-
-    const blockedBash = await client.request('tools/call', {
-      name: 'codexpro',
-      arguments: { action: 'bash', args: { workspace_id: opened.structuredContent.workspace_id, command: 'pwd' } }
-    });
-    assert(blockedBash.isError === true && String(blockedBash.structuredContent.error).includes('not available'), 'supertool allowed disabled bash action');
+    const malformedReadError = JSON.stringify(malformedRead);
+    assert(malformedRead.isError === true, 'minimal malformed read was not rejected');
+    assert(/Invalid arguments for (tool )?read/.test(malformedReadError) && !malformedReadError.includes('TypeError'), `minimal malformed read leaked raw handler error: ${malformedReadError}`);
   } finally {
     client.close();
   }
@@ -588,7 +573,9 @@ async function runNodeFallbackSearchLimitStress() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-stress-node-search-'));
   await fs.writeFile(path.join(root, 'exact.txt'), 'needle one\nneedle two\n', 'utf8');
   await fs.writeFile(path.join(root, 'overflow.txt'), 'needle one\nneedle two\nneedle three\n', 'utf8');
-  const client = await initClient(root, { PATH: '/usr/bin:/bin' });
+  const emptyPath = path.join(root, 'empty-bin');
+  await fs.mkdir(emptyPath);
+  const client = await initClient(root, { PATH: emptyPath });
   try {
     const opened = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
     const exact = await client.request('tools/call', {
@@ -730,10 +717,10 @@ async function runShowChangesStatsStress() {
     });
     assert(scopedStatus.structuredContent.changed_files.length === 1 && scopedStatus.structuredContent.changed_files[0].includes('demo.txt'), `git_status path leaked unrelated files: ${JSON.stringify(scopedStatus.structuredContent.changed_files)}`);
     const superScopedStatus = await client.request('tools/call', {
-      name: 'codexpro',
+      name: 'loom',
       arguments: { action: 'git_status', args: { workspace_id: opened.structuredContent.workspace_id, path: 'demo.txt' } }
     });
-    assert(superScopedStatus.structuredContent.codexpro_tool === 'git_status' && superScopedStatus.structuredContent.changed_files.length === 1 && superScopedStatus.structuredContent.changed_files[0].includes('demo.txt'), `supertool git_status path leaked unrelated files: ${JSON.stringify(superScopedStatus.structuredContent.changed_files)}`);
+    assert(superScopedStatus.structuredContent.loom_tool === 'git_status' && superScopedStatus.structuredContent.changed_files.length === 1 && superScopedStatus.structuredContent.changed_files[0].includes('demo.txt'), `supertool git_status path leaked unrelated files: ${JSON.stringify(superScopedStatus.structuredContent.changed_files)}`);
     const changes = await client.request('tools/call', {
       name: 'show_changes',
       arguments: { workspace_id: opened.structuredContent.workspace_id, path: 'demo.txt', include_diff: false }
@@ -792,20 +779,17 @@ async function runMinimalHandoffStress(root) {
     const tools = await client.request('tools/list', {});
     const names = tools.tools.map((tool) => tool.name);
     assert(names.includes('handoff_to_agent'), 'minimal handoff mode missing handoff_to_agent');
+    assert(!names.includes('loom'), 'minimal handoff mode exposed loom supertool');
     assert(!names.includes('write') && !names.includes('edit') && !names.includes('apply_patch'), 'minimal handoff mode exposed write/edit/apply_patch');
-    const actions = await client.request('tools/call', { name: 'codexpro', arguments: { action: 'list_actions' } });
-    assert(actions.structuredContent.actions.includes('handoff_to_agent'), 'minimal handoff supertool actions missing handoff_to_agent');
-    assert(!actions.structuredContent.actions.includes('write') && !actions.structuredContent.actions.includes('edit') && !actions.structuredContent.actions.includes('apply_patch'), 'minimal handoff supertool actions exposed write/edit/apply_patch');
+    const opened = await client.request('tools/call', {
+      name: 'workspace',
+      arguments: { action: 'open', root }
+    });
     const handoff = await client.request('tools/call', {
-      name: 'codexpro',
-      arguments: { action: 'agent_handoff', args: { title: 'Stress Plan', plan: '- keep it narrow' } }
+      name: 'handoff_to_agent',
+      arguments: { workspace_id: opened.structuredContent.workspace.id, title: 'Stress Plan', plan: '- keep it narrow' }
     });
-    assert(handoff.structuredContent.codexpro_tool === 'handoff_to_agent' && handoff.structuredContent.wrapped_tool === 'handoff_to_agent', 'minimal handoff supertool did not write plan');
-    const blockedWrite = await client.request('tools/call', {
-      name: 'codexpro',
-      arguments: { action: 'write', args: { path: 'demo.txt', content: 'bypass\n' } }
-    });
-    assert(blockedWrite.isError === true && String(blockedWrite.structuredContent.error).includes('not available'), 'minimal handoff supertool allowed disabled write');
+    assert(handoff.structuredContent.loom_tool === 'handoff_to_agent', 'minimal direct handoff did not write plan');
   } finally {
     client.close();
   }

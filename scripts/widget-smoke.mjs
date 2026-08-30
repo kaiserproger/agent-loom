@@ -61,7 +61,7 @@ function mount(openai = {}) {
 }
 
 const bashPayload = {
-  codexpro_tool: "bash",
+  loom_tool: "bash",
   command: "npm run check",
   cwd: "/tmp/workspace",
   exitCode: 0,
@@ -92,7 +92,7 @@ delayed.listeners.get("openai:set_globals")({
       theme: "dark",
       mcp_tool_result: {
         structuredContent: {
-          codexpro_tool: "open_workspace",
+          loom_tool: "open_workspace",
           root: "/tmp/workspace",
           agents_loaded: true,
           tool_mode: "standard",
