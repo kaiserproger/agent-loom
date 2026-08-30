@@ -14,6 +14,7 @@ const POOL_PROTOCOL_VERSION = 1;
 const TASK_MARKER = "POOL_TASK_V1";
 const RESULT_MARKER = "POOL_RESULT_V1";
 const CONTROL_MARKER = "POOL_CONTROL_V1";
+const WORKER_CONTENT_PATHSPEC = [".", ":(exclude).ai-bridge/**"];
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -437,6 +438,17 @@ if __name__ == "__main__":
 `;
 }
 
+function stopWorkerSupervisor(workspace, worker) {
+  run("tmux", ["kill-session", "-t", worker.tmux_session], { cwd: workspace.root, allowFailure: true });
+  const status = run("h5i", ["box", "status", worker.box_name], { cwd: workspace.root, allowFailure: true });
+  const match = `${status.stdout}\n${status.stderr}`.match(/(?:run\s+pid|pid[=: ]+)(\d+)/i);
+  if (!match) return;
+  const pid = Number(match[1]);
+  try { process.kill(pid, "SIGTERM"); } catch { return; }
+  run("timeout", ["5", "tail", `--pid=${pid}`, "-f", "/dev/null"], { cwd: workspace.root, allowFailure: true });
+  try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch {}
+}
+
 function workerRunnerSource(workspace, metadata, worker) {
   const runtimeDir = worker.runtime_dir ?? path.join(worker.work_dir, ".ai-bridge", "pool-runtime");
   const dispatcherPath = path.join(runtimeDir, "dispatcher.py");
@@ -751,7 +763,7 @@ export async function readAgentForum(workspace, options = {}) {
 
 function verifyResult(pool, bytes, signature, taskId) {
   const result = JSON.parse(bytes.toString("utf8"));
-  const worker = pool.metadata.workers.find((item) => item.identity === result.worker);
+  const worker = pool.metadata.workers.find((item) => item.identity === result.worker || (item.prior_identities ?? []).includes(result.worker));
   if (!worker?.secret) throw new CodexProError(`Pi pool result worker is unknown for task ${taskId}.`);
   const expected = signBytes(worker.secret, bytes);
   if (expected !== signature) throw new CodexProError(`Pi pool result signature mismatch for task ${taskId}.`);
@@ -761,13 +773,15 @@ function verifyResult(pool, bytes, signature, taskId) {
 
 async function findLocalResult(pool, taskId) {
   for (const worker of pool.metadata.workers) {
-    const taskDir = path.join(workerStateDir(pool.metadata.pool_id, worker.identity), "tasks");
-    const file = path.join(taskDir, `${taskId}.result.json`);
-    try {
-      const bytes = await fsp.readFile(file);
-      const signature = (await fsp.readFile(path.join(taskDir, `${taskId}.result.sig`), "utf8")).trim();
-      return verifyResult(pool, bytes, signature, taskId);
-    } catch {}
+    for (const identity of [worker.identity, ...(worker.prior_identities ?? [])]) {
+      const taskDir = path.join(workerStateDir(pool.metadata.pool_id, identity), "tasks");
+      const file = path.join(taskDir, `${taskId}.result.json`);
+      try {
+        const bytes = await fsp.readFile(file);
+        const signature = (await fsp.readFile(path.join(taskDir, `${taskId}.result.sig`), "utf8")).trim();
+        return verifyResult(pool, bytes, signature, taskId);
+      } catch {}
+    }
   }
   return null;
 }
@@ -850,10 +864,98 @@ export async function agentPoolStatus(workspace, options = {}) {
   const workers = [];
   for (const worker of pool.metadata.workers) {
     const running = run("tmux", ["has-session", "-t", worker.tmux_session], { cwd: workspace.root, allowFailure: true }).status === 0;
-    const status = run("git", ["status", "--porcelain=v1"], { cwd: worker.work_dir, allowFailure: true }).stdout;
-    workers.push({ worker_id: worker.worker_id, identity: worker.identity, runtime: worker.runtime ?? pool.metadata.runtime, role: worker.role, model: worker.model ?? pool.metadata.model, models: worker.models ?? [worker.model ?? pool.metadata.model], thinking: worker.thinking ?? pool.metadata.thinking, running, box_name: worker.box_name, work_dir: worker.work_dir, baseline_commit: worker.baseline_commit, changed_paths: status.split(/\r?\n/).filter(Boolean).slice(0, 100), log_tail: await tailFile(worker.log_path, Number(options.log_tail_bytes ?? 8000)) });
+    const status = run("git", ["status", "--porcelain=v1", "--", ...WORKER_CONTENT_PATHSPEC], { cwd: worker.work_dir, allowFailure: true }).stdout;
+    workers.push({ worker_id: worker.worker_id, identity: worker.identity, runtime: worker.runtime ?? pool.metadata.runtime, role: worker.role, model: worker.model ?? pool.metadata.model, models: worker.models ?? [worker.model ?? pool.metadata.model], thinking: worker.thinking ?? pool.metadata.thinking, running, box_name: worker.box_name, work_dir: worker.work_dir, baseline_commit: worker.baseline_commit, refreshed_at: worker.refreshed_at ?? null, changed_paths: status.split(/\r?\n/).filter(Boolean).slice(0, 100), log_tail: await tailFile(worker.log_path, Number(options.log_tail_bytes ?? 8000)) });
   }
   return { ...mirrorMetadata(pool.metadata), workers };
+}
+
+async function refreshAgentWorkerUnlocked(workspace, options = {}) {
+  const pool = await loadPool(workspace, options.pool_id);
+  if (pool.metadata.stopped_at) throw new CodexProError(`Canonical pool ${pool.metadata.pool_id} is stopped. Start it before refreshing a worker.`);
+  const requested = String(options.worker_id ?? "").trim();
+  const workerIndex = pool.metadata.workers.findIndex((item) => item.worker_id === requested || item.identity === requested);
+  if (workerIndex < 0) throw new CodexProError(`Agent pool worker not found: ${requested}`);
+  const worker = pool.metadata.workers[workerIndex];
+  const taskFiles = await fsp.readdir(path.join(pool.dir, "tasks")).catch(() => []);
+  for (const name of taskFiles.filter((item) => item.endsWith(".json"))) {
+    const task = await readJson(path.join(pool.dir, "tasks", name), "Agent task").catch(() => null);
+    if (!task || task.worker !== worker.identity) continue;
+    const resultSig = path.join(workerStateDir(pool.metadata.pool_id, worker.identity), "tasks", `${task.task_id}.result.sig`);
+    if (!(await fsp.access(resultSig).then(() => true).catch(() => false))) {
+      throw new CodexProError(`Agent ${worker.worker_id} has pending task ${task.task_id}; wait for it before refreshing.`);
+    }
+  }
+
+  const oldBox = worker.box_name;
+  const refreshSuffix = randomBytes(3).toString("hex");
+  const boxName = `${oldBox.slice(0, 54)}-r${refreshSuffix}`.slice(0, 63);
+  const refreshedIdentity = `${worker.identity.slice(0, 54)}-r${refreshSuffix}`.slice(0, 63);
+  const newRunnerPath = path.join(pool.dir, `${worker.worker_id}-runner-${randomBytes(3).toString("hex")}.sh`);
+  let workDir = "";
+  let oldStopped = false;
+  let newIdentityAttached = false;
+  let newSessionStarted = false;
+  try {
+    const created = run("h5i", ["box", "create", boxName, "--from", "HEAD", "--profile", "default", "--isolation", "workspace", "--json"], { cwd: workspace.root });
+    const manifest = JSON.parse(created.stdout);
+    workDir = String(manifest.work_dir ?? "");
+    if (!workDir) throw new CodexProError("h5i refreshed box manifest omitted work_dir.");
+    const skillDir = path.join(workDir, ".ai-bridge", "h5i-skill");
+    run("h5i", ["skill", "install", "--target", skillDir], { cwd: workspace.root });
+    const seed = await seedCurrentWorktree(workspace.root, workDir, options.seed_dirty !== false);
+    const runtimeDir = await installWorkerRuntime(workDir, worker.secret, pool.metadata.generation ?? 1);
+
+    stopWorkerSupervisor(workspace, worker);
+    oldStopped = true;
+    const dirty = run("git", ["status", "--porcelain=v1", "--", ...WORKER_CONTENT_PATHSPEC], { cwd: worker.work_dir }).stdout.trim();
+    const committed = run("git", ["diff", "--quiet", worker.baseline_commit, "HEAD", "--", ...WORKER_CONTENT_PATHSPEC], { cwd: worker.work_dir, allowFailure: true }).status !== 0;
+    if (dirty || committed) throw new CodexProError(`Agent ${worker.worker_id} has work beyond its baseline. Preserve and apply it before refreshing its snapshot.`);
+
+    const trust = attachWorker(workspace.root, boxName, refreshedIdentity, worker.role);
+    newIdentityAttached = true;
+    const refreshedWorker = {
+      ...worker,
+      identity: refreshedIdentity,
+      prior_identities: [...new Set([...(worker.prior_identities ?? []), worker.identity])],
+      box_name: boxName,
+      h5i_box_id: manifest.id ?? null,
+      h5i_policy_digest: manifest.policy_digest ?? null,
+      h5i_isolation: manifest.isolation_claim ?? "workspace",
+      h5i_forum_trust: trust,
+      work_dir: workDir,
+      baseline_commit: seed.seedCommit,
+      seeded_tracked_diff: seed.seededTrackedDiff,
+      seeded_untracked: seed.seededUntracked,
+      runtime_dir: runtimeDir,
+      skill_dir: skillDir,
+      pi_session_id: randomUUID(),
+      runner_path: newRunnerPath,
+      refreshed_at: new Date().toISOString()
+    };
+    const refreshedMetadata = { ...pool.metadata, workers: [...pool.metadata.workers] };
+    refreshedMetadata.workers[workerIndex] = refreshedWorker;
+    await fsp.writeFile(newRunnerPath, workerRunnerSource(workspace, refreshedMetadata, refreshedWorker), { encoding: "utf8", mode: 0o700 });
+    run("tmux", ["new-session", "-d", "-s", worker.tmux_session, "-c", workspace.root, newRunnerPath], { cwd: workspace.root });
+    newSessionStarted = true;
+    if (run("tmux", ["has-session", "-t", worker.tmux_session], { cwd: workspace.root, allowFailure: true }).status !== 0) throw new CodexProError("Refreshed worker supervisor did not remain running.");
+    await persistPool(workspace, pool.dir, refreshedMetadata);
+    run("h5i", ["forum", "revoke", worker.identity], { cwd: workspace.root, allowFailure: true });
+    run("h5i", ["box", "abort", oldBox], { cwd: workspace.root, allowFailure: true });
+    return { pool_id: pool.metadata.pool_id, worker_id: worker.worker_id, worker_identity: refreshedIdentity, previous_worker_identity: worker.identity, old_box_name: oldBox, box_name: boxName, baseline_commit: refreshedWorker.baseline_commit, refreshed_at: refreshedWorker.refreshed_at, seeded_tracked_diff: refreshedWorker.seeded_tracked_diff, seeded_untracked: refreshedWorker.seeded_untracked };
+  } catch (error) {
+    if (newSessionStarted) run("tmux", ["kill-session", "-t", worker.tmux_session], { cwd: workspace.root, allowFailure: true });
+    if (newIdentityAttached) run("h5i", ["forum", "revoke", refreshedIdentity], { cwd: workspace.root, allowFailure: true });
+    if (oldStopped) run("tmux", ["new-session", "-d", "-s", worker.tmux_session, "-c", workspace.root, worker.runner_path], { cwd: workspace.root, allowFailure: true });
+    if (workDir) run("h5i", ["box", "abort", boxName], { cwd: workspace.root, allowFailure: true });
+    await fsp.rm(newRunnerPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+export function refreshAgentWorker(workspace, options = {}) {
+  const poolId = String(options.pool_id ?? "").trim();
+  return withWorkspaceMutation(workspace.root, () => withPoolMutation(poolId, () => withPoolFileMutation(poolId, () => refreshAgentWorkerUnlocked(workspace, options))));
 }
 
 function checkpointPatchPaths(workspace, patchPath) {
@@ -883,8 +985,8 @@ async function checkpointAgentWorkerUnlocked(workspace, options = {}) {
   const requested = String(options.worker_id ?? "").trim();
   const worker = pool.metadata.workers.find((item) => item.worker_id === requested || item.identity === requested);
   if (!worker) throw new CodexProError(`Pi pool worker not found: ${requested}`);
-  run("git", ["add", "-N", "."], { cwd: worker.work_dir, allowFailure: true });
-  const diff = run("git", ["diff", "--binary", worker.baseline_commit], { cwd: worker.work_dir }).stdout;
+  run("git", ["add", "-N", "--", ...WORKER_CONTENT_PATHSPEC], { cwd: worker.work_dir, allowFailure: true });
+  const diff = run("git", ["diff", "--binary", worker.baseline_commit, "--", ...WORKER_CONTENT_PATHSPEC], { cwd: worker.work_dir }).stdout;
   const checkpointId = `${worker.worker_id}-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${randomBytes(3).toString("hex")}`;
   const mirror = mirrorPoolDir(workspace, pool.metadata.pool_id);
   const patchPath = path.join(mirror, "checkpoints", `${checkpointId}.patch`);
@@ -903,7 +1005,7 @@ async function checkpointAgentWorkerUnlocked(workspace, options = {}) {
   });
   let advanced = false;
   if (options.advance_baseline === true && diff.trim()) {
-    run("git", ["add", "-A"], { cwd: worker.work_dir });
+    run("git", ["add", "-A", "--", ...WORKER_CONTENT_PATHSPEC], { cwd: worker.work_dir });
     run("git", ["-c", "user.name=Agent Loom", "-c", "user.email=agent-loom@local.invalid", "-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", `agent-loom: pool checkpoint ${checkpointId}`], { cwd: worker.work_dir });
     worker.baseline_commit = run("git", ["rev-parse", "HEAD"], { cwd: worker.work_dir }).stdout.trim();
     advanced = true;

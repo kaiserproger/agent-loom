@@ -19,7 +19,7 @@ import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
-import { createAgentPool, runAgentTask, waitAgentTask, postAgentMessage, readAgentForum, agentPoolStatus, checkpointAgentWorker, applyAgentCheckpoint, stopAgentPool, resolveAgentPoolWorkspace, availablePiModels } from "./agentPoolOps.js";
+import { createAgentPool, runAgentTask, waitAgentTask, postAgentMessage, readAgentForum, agentPoolStatus, refreshAgentWorker, checkpointAgentWorker, applyAgentCheckpoint, stopAgentPool, resolveAgentPoolWorkspace, availablePiModels } from "./agentPoolOps.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -2126,9 +2126,9 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     runtime,
     {
       title: runtime === "pi" ? "Pi Agents" : "Codex Agents",
-      description: `Interface to the repository's ONE canonical h5i agent pool. NEVER create a pool per chat or task: action=start is idempotent for a Git root and returns or extends the existing mixed Pi/Codex pool. Always reuse its pool_id. Pi agents may choose any locally available Pi model/provider and, when one model/provider fails, retry with another available model/provider while preserving the same pool, box, and task contract. For action=start, ALWAYS pass the explicit Git repository root. apply_checkpoint safely applies only a selected worker delta without commit/reset/stash/h5i merge.`,
+      description: `Interface to the repository's ONE canonical h5i agent pool. NEVER create a pool per chat or task: action=start is idempotent for a Git root and returns or extends the existing mixed Pi/Codex pool. Always reuse its pool_id. Before independent QA or review of newer host changes, use action=refresh with the reviewer agent: this replaces only that worker's stale box from the current host worktree while keeping the same canonical pool. Pi agents may choose any locally available Pi model/provider and fail over safely. For action=start, ALWAYS pass the explicit Git repository root. apply_checkpoint safely applies only a selected worker delta without commit/reset/stash/h5i merge.`,
       inputSchema: {
-        action: z.enum(["models", "start", "send", "wait", "status", "messages", "checkpoint", "apply_checkpoint", "stop"]),
+        action: z.enum(["models", "start", "send", "wait", "status", "messages", "refresh", "checkpoint", "apply_checkpoint", "stop"]),
         root: z.string().optional().describe("Explicit Git repository root. Required for action=start so a reconnect cannot bind the pool to the default workspace."),
         workspace_id: z.string().optional().describe("Optional opened workspace id; root remains required for action=start."),
         pool: z.string().optional().describe("Pool id. Required except for action=start."),
@@ -2140,7 +2140,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
           role: z.enum(["dev", "reviewer"]).optional(),
           thinking: z.enum(["low", "medium", "high"]).optional()
         })).min(1).max(4).optional(),
-        agent: z.string().optional().describe("Agent id; send uses round-robin when omitted."),
+        agent: z.string().optional().describe("Agent id. Required for refresh/checkpoint/apply_checkpoint; send uses round-robin when omitted."),
         message: z.string().optional().describe("Task or forum message."),
         task: z.string().optional().describe("Pending task id for action=wait."),
         checkpoint: z.string().optional().describe("Checkpoint id returned by action=checkpoint; required for action=apply_checkpoint."),
@@ -2191,6 +2191,11 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
           ? await postAgentMessage(workspace, { pool_id: args.pool, worker_id: args.agent, message: args.message })
           : await readAgentForum(workspace, { pool_id: args.pool });
         return textResult(args.message ? `# Message Posted\n\nTo: ${result.worker_id ?? "all"}` : `# Agent Forum\n\n${result.text}`, result);
+      }
+      if (args.action === "refresh") {
+        if (!args.agent) throw new CodexProError("agent is required for action=refresh.");
+        const result = await refreshAgentWorker(workspace, { pool_id: args.pool, worker_id: args.agent, seed_dirty: true });
+        return textResult(`# Agent Snapshot Refreshed\n\nAgent: ${result.worker_id}\nCurrent host snapshot: ${result.baseline_commit}\nCanonical pool unchanged: ${result.pool_id}`, result);
       }
       if (args.action === "checkpoint") {
         if (!args.agent) throw new CodexProError("agent is required for action=checkpoint.");

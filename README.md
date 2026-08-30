@@ -70,9 +70,11 @@ Both tools use the same contract:
 }
 ```
 
-Actions: `models`, `start`, `send`, `wait`, `status`, `messages`, `checkpoint`, `apply_checkpoint`, `stop`.
+Actions: `models`, `start`, `send`, `wait`, `status`, `messages`, `refresh`, `checkpoint`, `apply_checkpoint`, `stop`.
 
-`pi {"action":"models"}` lists locally available Pi models/providers. A coordinator may choose any of them or omit `model`; Pi workers keep an ordered candidate list and automatically try another available model/provider after an invocation failure, within the same canonical pool and shared 20-minute task budget.
+`pi {"action":"models"}` lists locally available Pi models/providers. A coordinator may choose any of them or omit `model`; Pi workers keep an ordered candidate list and automatically try another available model/provider after a safe invocation failure, within the same canonical pool and shared 20-minute task budget.
+
+Before independent QA or review of changes made after the pool was seeded, call `pi/codex {"action":"refresh","pool":"...","agent":"reviewer-id"}`. Agent Loom replaces only that clean worker's h5i box with a fresh snapshot of the current host worktree; the canonical pool and forum remain unchanged. Refresh refuses to discard uncheckpointed worker changes.
 
 `apply_checkpoint` takes `pool`, `agent`, and the `checkpoint` returned by `checkpoint`. It verifies and atomically applies only that worker delta over the current dirty worktree without commit, reset, stash, or h5i box merge. Existing owner changes are preserved; overlapping patches fail before mutation, and an application receipt prevents replay.
 

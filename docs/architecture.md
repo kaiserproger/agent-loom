@@ -8,7 +8,7 @@ Configured allowed roots are the authority boundary. `workspace open/use` never 
 
 ## Runtime adapters
 
-The public `pi` and `codex` tools share one canonical pool per canonical Git root. A filesystem start lock makes `start` idempotent across concurrent MCP sessions/processes. Repeated starts reuse the pool; starting the other runtime adds workers to it rather than creating another forum or pool. Both use the same h5i worker lifecycle:
+The public `pi` and `codex` tools share one canonical pool per canonical Git root. A filesystem start lock makes `start` idempotent across concurrent MCP sessions/processes. Repeated starts reuse the pool; starting the other runtime adds workers to it rather than creating another forum or pool. `refresh` rotates one clean worker onto a fresh current-host snapshot for independent QA while retaining the canonical pool and forum; it refuses pending tasks, stopped pools, dirty content, and committed changes beyond the worker baseline. Both use the same h5i worker lifecycle:
 
 1. create a stable h5i box/worktree;
 2. attach a forum identity;
