@@ -63,6 +63,8 @@ function closestExistingParent(absPath: string): string {
   return current;
 }
 
+const openedWorkspaceRoots = new Map<string, string>();
+
 export class WorkspaceManager {
   private readonly workspaces = new Map<string, Workspace>();
   private selectedWorkspaceId?: string;
@@ -107,6 +109,7 @@ export class WorkspaceManager {
     const id = workspaceIdForRoot(realRoot);
     const workspace = { id, root: realRoot, openedAt: new Date().toISOString() };
     this.workspaces.set(id, workspace);
+    openedWorkspaceRoots.set(id, realRoot);
     if (options.select !== false) this.selectedWorkspaceId = id;
     return workspace;
   }
@@ -117,12 +120,12 @@ export class WorkspaceManager {
         const selected = this.workspaces.get(this.selectedWorkspaceId);
         if (selected) return selected;
       }
-      return this.selectDefaultWorkspace();
+      throw new CodexProError("No workspace is selected for this MCP session. Call workspace action=open/open_workspace for the requested project, or pass its workspace_id explicitly. The launcher default is not used implicitly because ChatGPT may reconnect between tool calls.");
     }
-    const workspace = this.workspaces.get(id);
+    let workspace = this.workspaces.get(id);
     if (!workspace) {
-      const configuredRoot = this.config.allowedRoots.find((allowedRoot) => workspaceIdForRoot(allowedRoot) === id);
-      if (configuredRoot) return this.openWorkspace(configuredRoot, { select: false });
+      const knownRoot = openedWorkspaceRoots.get(id) ?? this.config.allowedRoots.find((allowedRoot) => workspaceIdForRoot(allowedRoot) === id);
+      if (knownRoot) workspace = this.openWorkspace(knownRoot, { select: false });
     }
     if (!workspace) {
       throw new CodexProError(`Unknown workspace_id: ${id}. Call open_workspace first.`);
@@ -166,8 +169,8 @@ export class WorkspaceManager {
     return workspace;
   }
 
-  currentWorkspaceId(): string {
-    return this.getWorkspace().id;
+  currentWorkspaceId(): string | undefined {
+    return this.selectedWorkspaceId;
   }
 }
 

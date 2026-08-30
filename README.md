@@ -13,7 +13,7 @@ A normal “spawn an agent” tool couples an agent's lifetime to one request. A
 - forum identity and coordination thread;
 - review checkpoint baseline.
 
-A host-owned supervisor recycles each dispatcher every 25 minutes, below h5i's run ceiling. Individual turns are bounded to 20 minutes, and interrupted claimed tasks are blocked rather than replayed.
+A host-owned supervisor runs one task per short-lived h5i dispatcher invocation. Idle dispatchers wait at most 60 seconds before recycling, so a newly accepted turn always has the full 20-minute task budget below h5i's run ceiling. Interrupted claimed tasks are blocked rather than replayed.
 
 ## MCP interface
 
@@ -26,7 +26,7 @@ ChatGPT Web remains a first-class coding client; persistent subagents are option
 - `bash` for workspace-scoped verification commands;
 - `show_changes` for Git status and diff review.
 
-Every tool accepts an explicit `workspace_id` or uses the workspace selected by this chat's MCP session. Default policy is `write=workspace` and `bash=safe`; trusted local deployments can opt into full Bash explicitly.
+Every file/shell tool accepts an explicit `workspace_id` or uses the workspace selected in the current MCP session. After a ChatGPT reconnect, Agent Loom deliberately refuses to fall back to the launcher root: reopen the requested project or pass its stable `workspace_id`. Default policy is `write=workspace` and `bash=safe`; trusted local deployments can opt into full Bash explicitly.
 
 ### `workspace`
 
@@ -70,7 +70,9 @@ Both tools use the same contract:
 }
 ```
 
-Actions: `start`, `send`, `wait`, `status`, `messages`, `checkpoint`, `stop`.
+Actions: `start`, `send`, `wait`, `status`, `messages`, `checkpoint`, `apply_checkpoint`, `stop`.
+
+`apply_checkpoint` takes `pool`, `agent`, and the `checkpoint` returned by `checkpoint`. It verifies and atomically applies only that worker delta over the current dirty worktree without commit, reset, stash, or h5i box merge. Existing owner changes are preserved; overlapping patches fail before mutation, and an application receipt prevents replay.
 
 `start` requires an explicit absolute Git repository `root`; it intentionally does not trust implicit session selection because ChatGPT may reconnect its MCP transport between tool calls. `send` waits in the same MCP call by default. `messages` without a message reads the shared forum; with a message it posts to one agent or the whole pool. Pools are globally indexed by pool id and route back to their bound allowed workspace after MCP reconnects.
 

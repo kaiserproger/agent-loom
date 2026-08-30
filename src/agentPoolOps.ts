@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { watch as watchFs } from "node:fs";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { CodexProError } from "./guard.js";
+import { hasSecretValue } from "./redact.js";
 
 const MAX_CAPTURE_BYTES = 64 * 1024 * 1024;
 const MAX_UNTRACKED_SEED_BYTES = 64 * 1024 * 1024;
@@ -100,18 +101,27 @@ function workerStateDir(poolId, identity) {
 }
 
 const poolMutationTails = new Map();
-async function withPoolMutation(poolId, operation) {
-  const previous = poolMutationTails.get(poolId) ?? Promise.resolve();
+const workspaceMutationTails = new Map();
+async function withMutation(tails, key, operation) {
+  const previous = tails.get(key) ?? Promise.resolve();
   let release;
   const turn = new Promise((resolve) => { release = resolve; });
   const tail = previous.then(() => turn);
-  poolMutationTails.set(poolId, tail);
+  tails.set(key, tail);
   await previous;
   try { return await operation(); }
   finally {
     release();
-    if (poolMutationTails.get(poolId) === tail) poolMutationTails.delete(poolId);
+    if (tails.get(key) === tail) tails.delete(key);
   }
+}
+
+async function withPoolMutation(poolId, operation) {
+  return withMutation(poolMutationTails, poolId, operation);
+}
+
+async function withWorkspaceMutation(root, operation) {
+  return withMutation(workspaceMutationTails, path.resolve(root), operation);
 }
 
 async function writeJsonAtomic(file, value) {
@@ -220,7 +230,7 @@ import time
 
 THREAD, IDENTITY, POOL_ID, RUNTIME, MODEL, THINKING, TOOLS, SKILL, SESSION_ID = sys.argv[1:10]
 STARTED = time.monotonic()
-DISPATCHER_SECONDS = 25 * 60
+DISPATCHER_SECONDS = 60
 TASK_SECONDS = 20 * 60
 STATE = Path.home() / ".agent-loom" / "worker-state" / POOL_ID / IDENTITY
 STATE.mkdir(parents=True, exist_ok=True)
@@ -349,8 +359,6 @@ def main():
         for payload in queue:
             task_id=payload["task_id"]
             if task_id in done_ids(): continue
-            if DISPATCHER_SECONDS - (time.monotonic() - STARTED) <= TASK_SECONDS + 30:
-                continue
             interrupted = task_id in claimed_ids()
             if not interrupted:
                 with CLAIMED.open("a") as fh: fh.write(task_id+"\n")
@@ -365,6 +373,7 @@ def main():
                 (task_dir / f"{task_id}.result.sig").write_text(sig+"\n")
                 forum_post("BLOCKED", f"POOL_RESULT_V1 worker={IDENTITY} id={task_id} status=BLOCKED sig={sig}", result_file)
                 with PROCESSED.open("a") as fh: fh.write(task_id+"\n")
+            return 0
         remaining=max(1, int(DISPATCHER_SECONDS - (time.monotonic() - STARTED)))
         cmd(["h5i","forum","wait","--timeout",str(min(120, remaining))])
     return 0
@@ -457,7 +466,7 @@ export async function createAgentPool(workspace, options = {}) {
       const runnerPath = path.join(dir, `${workerId}-runner.sh`);
       const tools = workerTools(workerRole);
       const dispatcherPath = path.join(runtimeDir, "dispatcher.py");
-      const runner = `#!/usr/bin/env bash\nset -u\nROOT=${shellQuote(workspace.root)}\nBOX=${shellQuote(boxName)}\nSTOP=${shellQuote(stopPath)}\nLOG=${shellQuote(logPath)}\nFAIL=0\nwhile [[ ! -f "$STOP" ]]; do\n  started=$(date +%s)\n  h5i box run "$BOX" -- python3 ${shellQuote(dispatcherPath)} ${shellQuote(threadId)} ${shellQuote(identity)} ${shellQuote(poolId)} ${shellQuote(runtime)} ${shellQuote(workerModel)} ${shellQuote(workerThinking)} ${shellQuote(tools)} ${shellQuote(skillDir)} ${shellQuote(piSessionId)} >>"$LOG" 2>&1\n  code=$?\n  ended=$(date +%s)\n  runtime=$((ended-started))\n  printf 'dispatcher_exit=%s runtime_s=%s at=%s\\n' "$code" "$runtime" "$(date -Is)" >>"$LOG"\n  [[ -f "$STOP" ]] && break\n  if (( runtime >= 60 )); then FAIL=0; else FAIL=$((FAIL+1)); fi\n  delay=$((1 << (FAIL < 5 ? FAIL : 5)))\n  sleep "$delay"\ndone\n`;
+      const runner = `#!/usr/bin/env bash\nset -u\nROOT=${shellQuote(workspace.root)}\nBOX=${shellQuote(boxName)}\nSTOP=${shellQuote(stopPath)}\nLOG=${shellQuote(logPath)}\nFAIL=0\nwhile [[ ! -f "$STOP" ]]; do\n  started=$(date +%s)\n  h5i box run "$BOX" -- python3 ${shellQuote(dispatcherPath)} ${shellQuote(threadId)} ${shellQuote(identity)} ${shellQuote(poolId)} ${shellQuote(runtime)} ${shellQuote(workerModel)} ${shellQuote(workerThinking)} ${shellQuote(tools)} ${shellQuote(skillDir)} ${shellQuote(piSessionId)} >>"$LOG" 2>&1\n  code=$?\n  ended=$(date +%s)\n  runtime=$((ended-started))\n  printf 'dispatcher_exit=%s runtime_s=%s at=%s\\n' "$code" "$runtime" "$(date -Is)" >>"$LOG"\n  [[ -f "$STOP" ]] && break\n  if (( code == 0 )); then FAIL=0; delay=0; else FAIL=$((FAIL+1)); delay=$((1 << (FAIL < 5 ? FAIL : 5))); fi\n  (( delay > 0 )) && sleep "$delay"\ndone\n`;
       await fsp.writeFile(runnerPath, runner, { encoding: "utf8", mode: 0o700 });
       run("tmux", ["new-session", "-d", "-s", tmuxSession, "-c", workspace.root, runnerPath], { cwd: workspace.root });
       pendingResource.tmux_session = tmuxSession;
@@ -660,6 +669,28 @@ export async function agentPoolStatus(workspace, options = {}) {
   return { ...mirrorMetadata(pool.metadata), workers };
 }
 
+function checkpointPatchPaths(workspace, patchPath) {
+  const listed = run("git", ["apply", "--numstat", "-z", patchPath], { cwd: workspace.root });
+  const fields = listed.stdout.split("\0");
+  const paths = [];
+  for (let index = 0; index < fields.length;) {
+    const field = fields[index++];
+    if (!field) continue;
+    const firstTab = field.indexOf("\t");
+    const secondTab = firstTab < 0 ? -1 : field.indexOf("\t", firstTab + 1);
+    if (secondTab < 0) throw new CodexProError("Checkpoint patch path list is malformed.");
+    const inlinePath = field.slice(secondTab + 1);
+    if (inlinePath) paths.push(inlinePath);
+    else {
+      const oldPath = fields[index++];
+      const newPath = fields[index++];
+      if (!oldPath || !newPath) throw new CodexProError("Checkpoint rename path list is malformed.");
+      paths.push(oldPath, newPath);
+    }
+  }
+  return [...new Set(paths)];
+}
+
 export async function checkpointAgentWorker(workspace, options = {}) {
   const pool = await loadPool(workspace, options.pool_id);
   const requested = String(options.worker_id ?? "").trim();
@@ -667,20 +698,103 @@ export async function checkpointAgentWorker(workspace, options = {}) {
   if (!worker) throw new CodexProError(`Pi pool worker not found: ${requested}`);
   run("git", ["add", "-N", "."], { cwd: worker.work_dir, allowFailure: true });
   const diff = run("git", ["diff", "--binary", worker.baseline_commit], { cwd: worker.work_dir }).stdout;
-  const checkpointId = `${worker.worker_id}-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+  const checkpointId = `${worker.worker_id}-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${randomBytes(3).toString("hex")}`;
   const mirror = mirrorPoolDir(workspace, pool.metadata.pool_id);
   const patchPath = path.join(mirror, "checkpoints", `${checkpointId}.patch`);
   await fsp.mkdir(path.dirname(patchPath), { recursive: true });
   await fsp.writeFile(patchPath, diff, "utf8");
+  await writeJsonAtomic(path.join(mirror, "checkpoints", `${checkpointId}.json`), {
+    version: 1,
+    pool_id: pool.metadata.pool_id,
+    worker_id: worker.worker_id,
+    worker_identity: worker.identity,
+    checkpoint_id: checkpointId,
+    patch_sha256: createHash("sha256").update(diff).digest("hex"),
+    patch_bytes: Buffer.byteLength(diff),
+    baseline_commit: worker.baseline_commit,
+    created_at: new Date().toISOString()
+  });
   let advanced = false;
   if (options.advance_baseline === true && diff.trim()) {
     run("git", ["add", "-A"], { cwd: worker.work_dir });
-    run("git", ["-c", "user.name=CodexPro", "-c", "user.email=codexpro@local.invalid", "-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", `codexpro: pi pool checkpoint ${checkpointId}`], { cwd: worker.work_dir });
+    run("git", ["-c", "user.name=Agent Loom", "-c", "user.email=agent-loom@local.invalid", "-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", `agent-loom: pool checkpoint ${checkpointId}`], { cwd: worker.work_dir });
     worker.baseline_commit = run("git", ["rev-parse", "HEAD"], { cwd: worker.work_dir }).stdout.trim();
     advanced = true;
     await persistPool(workspace, pool.dir, pool.metadata);
   }
   return { pool_id: pool.metadata.pool_id, worker_id: worker.worker_id, worker_identity: worker.identity, checkpoint_id: checkpointId, patch_path: path.relative(workspace.root, patchPath), patch_bytes: Buffer.byteLength(diff), changed: Boolean(diff.trim()), baseline_commit: worker.baseline_commit, advanced_baseline: advanced };
+}
+
+export async function applyAgentCheckpoint(workspace, options = {}) {
+  const poolId = String(options.pool_id ?? "").trim();
+  return withPoolMutation(poolId, () => withWorkspaceMutation(workspace.root, async () => {
+    const pool = await loadPool(workspace, poolId);
+    const requestedWorker = String(options.worker_id ?? "").trim();
+    const worker = pool.metadata.workers.find((item) => item.worker_id === requestedWorker || item.identity === requestedWorker);
+    if (!worker) throw new CodexProError(`Agent pool worker not found: ${requestedWorker}`);
+    const checkpointId = String(options.checkpoint_id ?? "").trim();
+    const workerPattern = String(worker.worker_id).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (!new RegExp(`^${workerPattern}-[0-9]{14}(?:-[0-9a-f]{6})?$`).test(checkpointId)) {
+      throw new CodexProError("checkpoint_id is invalid or belongs to a different worker.");
+    }
+    if (options.write_allowed !== true) throw new CodexProError("apply_checkpoint requires write mode=workspace.");
+    const mirror = mirrorPoolDir(workspace, pool.metadata.pool_id);
+    const patchPath = path.join(mirror, "checkpoints", `${checkpointId}.patch`);
+    const metadataPath = path.join(mirror, "checkpoints", `${checkpointId}.json`);
+    const receiptPath = path.join(mirror, "checkpoints", `${checkpointId}.applied.json`);
+    const patch = await fsp.readFile(patchPath).catch(() => { throw new CodexProError(`Checkpoint patch not found: ${checkpointId}`); });
+    if (patch.length > MAX_CAPTURE_BYTES) throw new CodexProError("Checkpoint patch exceeds 64 MiB.");
+    const patchHash = createHash("sha256").update(patch).digest("hex");
+    let checkpointMetadata = null;
+    try { checkpointMetadata = JSON.parse(await fsp.readFile(metadataPath, "utf8")); } catch {}
+    if (checkpointMetadata && (checkpointMetadata.pool_id !== poolId || checkpointMetadata.worker_id !== worker.worker_id || checkpointMetadata.checkpoint_id !== checkpointId || checkpointMetadata.patch_sha256 !== patchHash)) {
+      throw new CodexProError("Checkpoint metadata does not match the selected pool, worker, id, and patch.");
+    }
+    const patchText = patch.toString("utf8");
+    if (/^(?:new file mode|new mode) 120000$/m.test(patchText)) throw new CodexProError("Checkpoint symlink changes are blocked.");
+    if (hasSecretValue(patchText)) throw new CodexProError("Secret-looking checkpoint content is blocked from the main worktree.");
+    const patchPaths = checkpointPatchPaths(workspace, patchPath);
+    if (!patchPaths.length && patchText.trim()) throw new CodexProError("Checkpoint patch contains no applicable paths.");
+    for (const patchFile of patchPaths) {
+      if (typeof options.validate_path !== "function") throw new CodexProError("Checkpoint path guard is unavailable.");
+      options.validate_path(patchFile);
+    }
+    let receipt = null;
+    try { receipt = JSON.parse(await fsp.readFile(receiptPath, "utf8")); } catch {}
+    if (receipt?.patch_sha256 && receipt.patch_sha256 !== patchHash) throw new CodexProError("Checkpoint receipt hash does not match the patch; refusing to apply.");
+    if (receipt?.state === "applied") return { ...receipt, already_applied: true, receipt_path: path.relative(workspace.root, receiptPath) };
+    if (!patch.toString("utf8").trim()) {
+      const emptyReceipt = { version: 1, state: "applied", pool_id: poolId, worker_id: worker.worker_id, checkpoint_id: checkpointId, patch_sha256: patchHash, patch_bytes: 0, applied_at: new Date().toISOString(), changed: false };
+      await writeJsonAtomic(receiptPath, emptyReceipt);
+      return { ...emptyReceipt, already_applied: false, receipt_path: path.relative(workspace.root, receiptPath) };
+    }
+    const check = run("git", ["apply", "--check", "--binary", "--whitespace=nowarn", patchPath], { cwd: workspace.root, allowFailure: true });
+    if (check.status !== 0 && receipt?.state === "applying") {
+      const reverse = run("git", ["apply", "--reverse", "--check", "--binary", "--whitespace=nowarn", patchPath], { cwd: workspace.root, allowFailure: true });
+      if (reverse.status === 0) {
+        const recovered = { ...receipt, state: "applied", applied_at: new Date().toISOString(), recovered_after_interruption: true };
+        await writeJsonAtomic(receiptPath, recovered);
+        return { ...recovered, already_applied: true, receipt_path: path.relative(workspace.root, receiptPath) };
+      }
+    }
+    if (check.status !== 0 && receipt?.state === "applying") {
+      throw new CodexProError(`A previous apply_checkpoint was interrupted and the target paths are now ambiguous. No automatic recovery was attempted; inspect the checkpoint and main worktree before retrying. ${(check.stderr || check.stdout).trim()}`);
+    }
+    if (check.status !== 0) throw new CodexProError(`Checkpoint does not apply cleanly; git apply rejected it before mutation: ${(check.stderr || check.stdout).trim()}`);
+    const beforeStatus = run("git", ["status", "--porcelain=v1", "-z"], { cwd: workspace.root }).stdout;
+    const applying = { version: 1, state: "applying", pool_id: poolId, worker_id: worker.worker_id, worker_identity: worker.identity, checkpoint_id: checkpointId, patch_sha256: patchHash, patch_bytes: patch.length, started_at: new Date().toISOString(), pre_status_sha256: createHash("sha256").update(beforeStatus).digest("hex") };
+    await writeJsonAtomic(receiptPath, applying);
+    run("git", ["apply", "--binary", "--whitespace=nowarn", patchPath], { cwd: workspace.root });
+    const afterStatus = run("git", ["status", "--porcelain=v1", "-z"], { cwd: workspace.root }).stdout;
+    const applied = { ...applying, state: "applied", applied_at: new Date().toISOString(), changed: true, post_status_sha256: createHash("sha256").update(afterStatus).digest("hex") };
+    await writeJsonAtomic(receiptPath, applied);
+    let forum_reported = false;
+    if (pool.metadata.forum_thread_id) {
+      const payload = { version: POOL_PROTOCOL_VERSION, pool_id: poolId, worker: worker.identity, control_id: `apply-${checkpointId}`, action: "checkpoint_applied", checkpoint_id: checkpointId, patch_sha256: patchHash, created_at: applied.applied_at };
+      try { await postEnvelope(workspace, pool, "control", worker, payload, "ACK"); forum_reported = true; } catch {}
+    }
+    return { ...applied, already_applied: false, forum_reported, receipt_path: path.relative(workspace.root, receiptPath) };
+  }));
 }
 
 export async function stopAgentPool(workspace, options = {}) {

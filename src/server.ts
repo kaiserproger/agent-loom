@@ -19,7 +19,7 @@ import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
-import { createAgentPool, runAgentTask, waitAgentTask, postAgentMessage, readAgentForum, agentPoolStatus, checkpointAgentWorker, stopAgentPool, resolveAgentPoolWorkspace } from "./agentPoolOps.js";
+import { createAgentPool, runAgentTask, waitAgentTask, postAgentMessage, readAgentForum, agentPoolStatus, checkpointAgentWorker, applyAgentCheckpoint, stopAgentPool, resolveAgentPoolWorkspace } from "./agentPoolOps.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -2097,6 +2097,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
         return textResult(`# Workspace Selected\n\n${opened.id} — ${opened.root}${guidance}`, { workspace: opened, selected_workspace_id: opened.id, is_git_root: isGitRoot, repositories });
       }
       if (args.action === "discover") {
+        if (!args.root) throw new CodexProError("root is required for workspace action=discover; implicit launcher-root discovery is disabled.");
         const repositories = workspaces.discoverRepositories(args.root, { maxDepth: args.max_depth, maxResults: args.max_results });
         const text = repositories.length
           ? repositories.map((repository) => `- ${repository.root}`).join("\n")
@@ -2125,9 +2126,9 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     runtime,
     {
       title: runtime === "pi" ? "Pi Agents" : "Codex Agents",
-      description: `Unified persistent ${runtime} agent interface. For action=start, ALWAYS pass the explicit Git repository root from the user's request; MCP reconnects can reset implicit workspace selection. Start once, then send many tasks to stable h5i boxes and conversation sessions. Pools survive MCP requests and route back to their bound workspace by id.`,
+      description: `Unified persistent ${runtime} agent interface. For action=start, ALWAYS pass the explicit Git repository root from the user's request; MCP reconnects can reset implicit workspace selection. apply_checkpoint safely applies only a selected worker delta to the dirty main worktree without commit, reset, stash, or h5i box merge. Pools survive MCP requests and route back to their bound workspace by id.`,
       inputSchema: {
-        action: z.enum(["start", "send", "wait", "status", "messages", "checkpoint", "stop"]),
+        action: z.enum(["start", "send", "wait", "status", "messages", "checkpoint", "apply_checkpoint", "stop"]),
         root: z.string().optional().describe("Explicit Git repository root. Required for action=start so a reconnect cannot bind the pool to the default workspace."),
         workspace_id: z.string().optional().describe("Optional opened workspace id; root remains required for action=start."),
         pool: z.string().optional().describe("Pool id. Required except for action=start."),
@@ -2141,6 +2142,7 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
         agent: z.string().optional().describe("Agent id; send uses round-robin when omitted."),
         message: z.string().optional().describe("Task or forum message."),
         task: z.string().optional().describe("Pending task id for action=wait."),
+        checkpoint: z.string().optional().describe("Checkpoint id returned by action=checkpoint; required for action=apply_checkpoint."),
         wait_seconds: z.number().int().min(0).max(60).optional().describe("Wait in the same call. Default: 60."),
         advance_baseline: z.boolean().optional(),
         force: z.boolean().optional()
@@ -2188,6 +2190,18 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
         if (!args.agent) throw new CodexProError("agent is required for action=checkpoint.");
         const result = await checkpointAgentWorker(workspace, { pool_id: args.pool, worker_id: args.agent, advance_baseline: args.advance_baseline === true });
         return textResult(`# Agent Checkpoint\n\nPatch: ${result.patch_path}\nBytes: ${result.patch_bytes}`, result);
+      }
+      if (args.action === "apply_checkpoint") {
+        if (!args.agent) throw new CodexProError("agent is required for action=apply_checkpoint.");
+        if (!args.checkpoint) throw new CodexProError("checkpoint is required for action=apply_checkpoint.");
+        const result = await applyAgentCheckpoint(workspace, {
+          pool_id: args.pool,
+          worker_id: args.agent,
+          checkpoint_id: args.checkpoint,
+          write_allowed: config.writeMode === "workspace",
+          validate_path: (patchPath: string) => guard.resolve(workspace, patchPath, { forWrite: true })
+        });
+        return textResult(`# Agent Checkpoint Applied\n\nCheckpoint: ${result.checkpoint_id}\nState: ${result.state}\nAlready applied: ${result.already_applied}`, result);
       }
       const result = await stopAgentPool(workspace, { pool_id: args.pool, force: args.force === true });
       return textResult(`# ${runtime} Pool Stop\n\nState: ${result.state}`, result);
