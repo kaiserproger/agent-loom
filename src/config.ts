@@ -245,7 +245,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
   const args = parseArgs(argv);
 
   const rootFromArgs = typeof args.root === "string" ? args.root : undefined;
-  const root = rootFromArgs ?? process.env.CODEXPRO_ROOT ?? process.env.CODEBASE_BRIDGE_REPO_ROOT ?? process.cwd();
+  const root = rootFromArgs ?? process.env.AGENT_LOOM_ROOT ?? process.env.CODEXPRO_ROOT ?? process.env.CODEBASE_BRIDGE_REPO_ROOT ?? process.cwd();
   const defaultRoot = toRealDir(root);
 
   const allowRootArgs = Array.isArray(args["allow-root"])
@@ -254,11 +254,12 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
       ? [args["allow-root"]]
       : [];
   const envAllowedRoots = [
+    ...splitRoots(process.env.AGENT_LOOM_ALLOWED_ROOTS),
     ...splitRoots(process.env.CODEXPRO_ALLOWED_ROOTS),
     ...splitRoots(process.env.CODEBASE_BRIDGE_ALLOWED_ROOTS)
   ];
 
-  const allowHome = process.env.CODEXPRO_ALLOW_HOME === "1" || args["allow-home"] === true;
+  const allowHome = process.env.AGENT_LOOM_ALLOW_HOME === "1" || process.env.CODEXPRO_ALLOW_HOME === "1" || args["allow-home"] === true;
   const requestedAllowed = [defaultRoot, ...allowRootArgs, ...envAllowedRoots, ...(allowHome ? [os.homedir()] : [])];
   const allowedRoots = [...new Set(requestedAllowed.map(toRealDir))];
 
@@ -285,8 +286,8 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
         ? args["tool-cards"]
         : undefined;
   const extraBlockedGlobs = splitList(process.env.CODEXPRO_BLOCKED_GLOBS, ",");
-  const host = hostArg ?? process.env.CODEXPRO_HOST ?? process.env.HOST ?? "127.0.0.1";
-  const authToken = process.env.CODEXPRO_HTTP_TOKEN ?? process.env.CODEBASE_BRIDGE_HTTP_TOKEN;
+  const host = hostArg ?? process.env.AGENT_LOOM_HOST ?? process.env.CODEXPRO_HOST ?? process.env.HOST ?? "127.0.0.1";
+  const authToken = process.env.AGENT_LOOM_HTTP_TOKEN ?? process.env.CODEXPRO_HTTP_TOKEN ?? process.env.CODEBASE_BRIDGE_HTTP_TOKEN;
   if (authToken && Buffer.byteLength(authToken, "utf8") < MIN_HTTP_TOKEN_BYTES) {
     throw new Error(
       `CODEXPRO_HTTP_TOKEN must be at least ${MIN_HTTP_TOKEN_BYTES} bytes. ` +
@@ -309,7 +310,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     defaultRoot,
     allowedRoots,
     host,
-    port: numberFrom(portArg ?? process.env.CODEXPRO_PORT ?? process.env.PORT, 8787, 1, 65535),
+    port: numberFrom(portArg ?? process.env.AGENT_LOOM_PORT ?? process.env.CODEXPRO_PORT ?? process.env.PORT, 8787, 1, 65535),
     widgetDomain: widgetDomainFrom(widgetDomainArg ?? process.env.CODEXPRO_WIDGET_DOMAIN),
     authToken,
     requireHttpToken,

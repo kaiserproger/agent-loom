@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { assertCodexProReleaseEnvironment } from "./release-guard.mjs";
+import { assertAgentLoomReleaseEnvironment } from "./release-guard.mjs";
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmCli = process.env.npm_execpath;
@@ -15,10 +15,10 @@ function runNpm(args, root) {
 }
 
 try {
-  const release = assertCodexProReleaseEnvironment();
+  const release = assertAgentLoomReleaseEnvironment();
   const publishArgs = process.argv.slice(2);
   if (publishArgs.some((arg) => arg === "--ignore-scripts" || arg.startsWith("--ignore-scripts="))) {
-    throw new Error("--ignore-scripts is not allowed for CodexPro releases.");
+    throw new Error("--ignore-scripts is not allowed for Agent Loom releases.");
   }
 
   runNpm(["run", "release:check"], release.root);

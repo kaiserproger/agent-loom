@@ -27,30 +27,30 @@ function run(command, args, { cwd, env = {} } = {}) {
   };
 }
 
-const wrongCwd = mkdtempSync(join(tmpdir(), "codexpro-release-guard-"));
+const wrongCwd = mkdtempSync(join(tmpdir(), "agent-loom-release-guard-"));
 
 try {
   const allowed = run(process.execPath, ["scripts/release-guard.mjs"], { cwd: root });
   assert.equal(allowed.status, 0, allowed.output);
-  assert.match(allowed.output, /CodexPro release guard: codexpro@\d+\.\d+\.\d+/);
+  assert.match(allowed.output, /Agent Loom release guard: agent-loom@\d+\.\d+\.\d+/);
 
   const wrongDirectory = run(process.execPath, [join(root, "scripts/release-guard.mjs")], { cwd: wrongCwd });
   assert.notEqual(wrongDirectory.status, 0, wrongDirectory.output);
-  assert.match(wrongDirectory.output, /Release commands must run from the CodexPro root/);
+  assert.match(wrongDirectory.output, /Release commands must run from the Agent Loom root/);
 
   const prefixArgs = ["--prefix", root, "run", "release:guard", "--silent"];
   const prefixInvocation = npmCli
     ? run(process.execPath, [npmCli, ...prefixArgs], { cwd: wrongCwd })
     : run(npm, prefixArgs, { cwd: wrongCwd });
   assert.notEqual(prefixInvocation.status, 0, prefixInvocation.output);
-  assert.match(prefixInvocation.output, /Release commands must run from the CodexPro root/);
+  assert.match(prefixInvocation.output, /Release commands must run from the Agent Loom root/);
 
   const packed = run(process.execPath, ["scripts/release-pack.mjs"], { cwd: root });
   assert.equal(packed.status, 0, packed.output);
   const tarball = JSON.parse(packed.output);
-  assert.equal(tarball.name, "codexpro");
+  assert.equal(tarball.name, "agent-loom");
   assert.match(tarball.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(tarball.filename, `codexpro-${tarball.version}.tgz`);
+  assert.equal(tarball.filename, `agent-loom-${tarball.version}.tgz`);
 } finally {
   rmSync(wrongCwd, { recursive: true, force: true });
 }

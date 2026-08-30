@@ -19,7 +19,7 @@ import {
   type WorkspaceProfile
 } from "./profileStore.js";
 import { redactSensitiveText, redactStructured } from "./redact.js";
-import { createCodexProServer } from "./server.js";
+import { createAgentLoomServer } from "./server.js";
 
 function escapeHtml(value: unknown): string {
   return String(value ?? "")
@@ -220,7 +220,7 @@ function serverUrlDisplay(endpoint: string | undefined, authEnabled: boolean): s
   const safeEndpoint = redactSensitiveText(endpoint);
   if (!authEnabled) return safeEndpoint;
   const glue = safeEndpoint.includes("?") ? "&" : "?";
-  return `${safeEndpoint}${glue}codexpro_token=<redacted>`;
+  return `${safeEndpoint}${glue}agent_loom_token=<redacted>`;
 }
 
 function currentTunnelMessage(tunnel: TunnelMode, endpoint: string): string {
@@ -416,13 +416,13 @@ const LOCAL_FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 6
   <rect x="8" y="8" width="48" height="48" rx="12" fill="#ffffff" fill-opacity=".12" stroke="#ffffff" stroke-opacity=".38"/>
   <path d="M38.4 40.3c-1.8 1.1-3.9 1.7-6.3 1.7-6.1 0-10.3-4.2-10.3-10s4.2-10 10.4-10c2.4 0 4.5.6 6.2 1.7l-2.1 4.1c-1.1-.7-2.3-1-3.8-1-2.9 0-4.9 2.1-4.9 5.2s2 5.2 4.9 5.2c1.5 0 2.8-.4 3.9-1.1l2 4.2Z" fill="#ffffff"/>
 </svg>`;
-const CODEXPRO_VERSION = "0.30.0";
+const AGENT_LOOM_VERSION = "0.1.0";
 
 function printHelp(): void {
-  console.log(`CodexPro MCP HTTP server
+  console.log(`Agent Loom MCP HTTP server
 
 Usage:
-  codexpro-mcp-http --root /path/to/repo --port 8787
+  agent-loom-mcp-http --root /path/to/repo --allow-root /another/repo --port 8787
   codexpro-mcp-http --version
   codexpro-mcp-http --help
 
@@ -433,7 +433,7 @@ Most users should run: codexpro start`);
 
 function onboardingPage(config: CodexProConfig): string {
   const localMcp = `http://${config.host}:${config.port}/mcp`;
-  const localMcpDisplay = config.authToken ? `${localMcp}?codexpro_token=<redacted>` : localMcp;
+  const localMcpDisplay = config.authToken ? `${localMcp}?agent_loom_token=<redacted>` : localMcp;
   const allowedRoots = config.allowedRoots.map((root) => `<li>${escapeHtml(root)}</li>`).join("");
   const authLabel = config.authToken ? "Token protected" : "Disabled";
   const writeTone = config.writeMode === "workspace" ? "agent" : config.writeMode;
@@ -1310,14 +1310,15 @@ function onboardingPage(config: CodexProConfig): string {
     <details class="panel details-panel">
       <summary>Allowed roots</summary>
       <ul class="roots">${allowedRoots}</ul>
-      <p class="note">CodexPro rejects workspace access outside these roots.</p>
+      <p class="note">Agent Loom rejects workspace access outside these roots.</p>
     </details>
     <footer class="foot">Token-protected local control surface for this workspace. Public sharing still happens only through your chosen tunnel.</footer>
   </main>
   <script>
     const initialUrl = new URL(window.location.href);
-    const connectorToken = initialUrl.searchParams.get("codexpro_token") || initialUrl.searchParams.get("token") || "";
+    const connectorToken = initialUrl.searchParams.get("agent_loom_token") || initialUrl.searchParams.get("codexpro_token") || initialUrl.searchParams.get("token") || "";
     if (connectorToken) {
+      initialUrl.searchParams.delete("agent_loom_token");
       initialUrl.searchParams.delete("codexpro_token");
       initialUrl.searchParams.delete("token");
       const cleanSearch = initialUrl.searchParams.toString();
@@ -1328,10 +1329,10 @@ function onboardingPage(config: CodexProConfig): string {
         let value = button.getAttribute("data-copy") || "";
         if (button.getAttribute("data-copy-kind") === "local-mcp") {
           const base = button.getAttribute("data-copy-base") || value;
-          value = connectorToken ? base + "?codexpro_token=" + encodeURIComponent(connectorToken) : base;
+          value = connectorToken ? base + "?agent_loom_token=" + encodeURIComponent(connectorToken) : base;
         } else if (button.getAttribute("data-copy-kind") === "server-url") {
           const base = button.getAttribute("data-copy-base") || value;
-          value = connectorToken ? base + "?codexpro_token=" + encodeURIComponent(connectorToken) : base;
+          value = connectorToken ? base + "?agent_loom_token=" + encodeURIComponent(connectorToken) : base;
         }
         try {
           await navigator.clipboard.writeText(value);
@@ -1436,7 +1437,7 @@ function onboardingPage(config: CodexProConfig): string {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   if (argv.includes("--version") || argv.includes("-v") || argv[0] === "version") {
-    console.log(CODEXPRO_VERSION);
+    console.log(AGENT_LOOM_VERSION);
     return;
   }
   if (argv.includes("--help") || argv[0] === "help") {
@@ -1499,9 +1500,9 @@ async function main(): Promise<void> {
       return;
     }
     const started = Date.now();
-    console.error(`[CodexPro] ${req.method} ${req.path} received`);
+    console.error(`[Agent Loom] ${req.method} ${req.path} received`);
     res.on("finish", () => {
-      console.error(`[CodexPro] ${req.method} ${req.path} -> ${res.statusCode} ${Date.now() - started}ms`);
+      console.error(`[Agent Loom] ${req.method} ${req.path} -> ${res.statusCode} ${Date.now() - started}ms`);
     });
     next();
   });
@@ -1523,11 +1524,13 @@ async function main(): Promise<void> {
       return;
     }
     const bearer = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-    const queryToken = typeof req.query.codexpro_token === "string"
-      ? req.query.codexpro_token
-      : typeof req.query.token === "string"
-        ? req.query.token
-        : undefined;
+    const queryToken = typeof req.query.agent_loom_token === "string"
+      ? req.query.agent_loom_token
+      : typeof req.query.codexpro_token === "string"
+        ? req.query.codexpro_token
+        : typeof req.query.token === "string"
+          ? req.query.token
+          : undefined;
     if (tokenMatches(bearer) || tokenMatches(queryToken)) {
       next();
       return;
@@ -1699,7 +1702,7 @@ async function main(): Promise<void> {
           if (closedSessionId) transports.delete(closedSessionId);
         };
 
-        const server = createCodexProServer(config);
+        const server = createAgentLoomServer(config);
         await server.connect(transport);
       } else {
         sendSessionError(res, sessionId);
@@ -1712,7 +1715,7 @@ async function main(): Promise<void> {
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",
-          error: { code: -32603, message: "Internal CodexPro MCP error. Check the local terminal for details." },
+          error: { code: -32603, message: "Internal Agent Loom MCP error. Check the local terminal for details." },
           id: null
         });
       }
@@ -1767,12 +1770,12 @@ async function main(): Promise<void> {
   });
 
   app.listen(config.port, config.host, () => {
-    console.error(`[CodexPro] HTTP MCP listening on http://${config.host}:${config.port}/mcp`);
-    console.error(`[CodexPro] defaultRoot=${config.defaultRoot}`);
-    console.error(`[CodexPro] allowedRoots=${config.allowedRoots.join(", ")}`);
-    console.error(`[CodexPro] bashMode=${config.bashMode}`);
-    console.error(`[CodexPro] writeMode=${config.writeMode}`);
-    console.error(`[CodexPro] widgetDomain=${config.widgetDomain}`);
+    console.error(`[Agent Loom] HTTP MCP listening on http://${config.host}:${config.port}/mcp`);
+    console.error(`[Agent Loom] defaultRoot=${config.defaultRoot}`);
+    console.error(`[Agent Loom] allowedRoots=${config.allowedRoots.join(", ")}`);
+    console.error(`[Agent Loom] bashMode=${config.bashMode}`);
+    console.error(`[Agent Loom] writeMode=${config.writeMode}`);
+    console.error(`[Agent Loom] widgetDomain=${config.widgetDomain}`);
   });
 }
 

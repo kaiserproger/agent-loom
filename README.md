@@ -1,183 +1,127 @@
-<p align="center">
-  <img src="docs/favicon.svg" width="72" height="72" alt="CodexPro logo">
-</p>
+# Agent Loom
 
-<h1 align="center">CodexPro</h1>
+Agent Loom is a local MCP server for routing multiple ChatGPT chats to multiple explicitly allowed Git workspaces through **one endpoint and one token**. It also manages persistent Pi and Codex agent pools in h5i boxes.
 
-<p align="center">
-  Give ChatGPT local coding tools for repos you explicitly allow.
-</p>
+Agent Loom is derived from the MIT-licensed CodexPro connector. The public orchestration interface and persistent agent runtime are maintained here independently.
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/codexpro"><img alt="npm" src="https://img.shields.io/npm/v/codexpro?style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rebel0789/codexpro/ci.yml?branch=main&style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/rebel0789/codexpro?style=flat-square"></a>
-  <a href="https://rebel0789.github.io/codexpro/"><img alt="Website" src="https://img.shields.io/badge/site-GitHub%20Pages-67e8f9?style=flat-square"></a>
-</p>
+## Why
 
-## What it is
+A normal “spawn an agent” tool couples an agent's lifetime to one request. Agent Loom keeps these stable across tasks:
 
-CodexPro is a local MCP server. It connects **your ChatGPT session** to **your machine** and **repos you allow**.
+- h5i box and worktree;
+- Pi or Codex conversation/session;
+- forum identity and coordination thread;
+- review checkpoint baseline.
 
-ChatGPT can read, search, edit, review, verify, import attachments, and write handoff plans. It stays inside those roots.
+A host-owned supervisor recycles each dispatcher every 25 minutes, below h5i's run ceiling. Individual turns are bounded to 20 minutes, and interrupted claimed tasks are blocked rather than replayed.
 
-It is not a hosted SaaS product, model proxy, quota bypass, account pool, or remote shell service.
+## MCP interface
 
-## Install
+### `workspace`
 
-Needs:
+Each HTTP MCP connection has its own selected workspace. Different ChatGPT chats can therefore select different projects while sharing the same server URL and token.
 
-- Node.js 20+
-- A ChatGPT account that can create custom MCP plugins
-- An HTTPS URL to your machine for ChatGPT web (tunnel or Tailscale Funnel)
-
-```bash
-npm install -g codexpro
-cd /path/to/your/repo
-codexpro setup
+```json
+{"action":"list"}
 ```
 
-## Connect in ChatGPT
-
-1. `Settings -> Security and login` → turn **Developer mode** on (keep CSP enforcement on).
-2. `Settings -> Plugins` → Plugins tab → **+** beside Search plugins.
-3. Create a plugin named `CodexPro`.
-4. Connection: **Server URL** → paste the URL CodexPro copied.
-5. Authentication: **No Authentication / None** (change this if the form defaults to OAuth).
-
-CodexPro auth is the token already in that URL. Do not share the URL.
-
-| Open Plugins and click `+` | Complete the New Plugin form |
-| --- | --- |
-| ![Open Plugins and click the plus button](docs/images/chatgpt-plugins-add.png) | ![Complete the New Plugin form](docs/images/chatgpt-plugin-details.png) |
-
-Daily use from the same repo:
-
-```bash
-codexpro start
+```json
+{"action":"use","workspace_id":"ws_..."}
 ```
 
-If plugin creation fails, run `codexpro connection-test` and check whether ChatGPT requests reach the local server.
+Actions: `list`, `open`, `use`, `current`.
 
-## What ChatGPT can do
+### `pi` and `codex`
 
-With workspace write mode (the normal agent setup):
+Both tools use the same contract:
 
-- read, search, and inspect the repo
-- edit with `write`, `edit`, or guarded `apply_patch`
-- import ChatGPT attachments with `import_file`
-- run allowlisted checks with `bash`
-- review diffs with `show_changes`
-- write plans under `.ai-bridge`
-- export a context bundle for chats that cannot call tools
-
-## Multiple projects
-
-One CodexPro process can allow more than one repo:
-
-```bash
-codexpro settings set --project ~/code/web --project ~/code/api
-codexpro settings show
-codexpro start
+```json
+{
+  "action": "start",
+  "workspace_id": "ws_...",
+  "name": "feature-team",
+  "agents": [
+    {"id":"coder","model":"zai/glm-5.3-flash","role":"dev"},
+    {"id":"reviewer","model":"openai-codex/gpt-5.6-luna","role":"reviewer"}
+  ]
+}
 ```
 
-Ask ChatGPT to `open_workspace` on an allowed project. `open_current_workspace` returns to the launch repo.
-
-For two ChatGPT accounts or hard isolation, run two CodexPro processes on different ports and Server URLs.
-
-## Commands
-
-```bash
-codexpro setup
-codexpro start
-codexpro start --root /path/to/repo
-codexpro doctor
-codexpro connection-test
-codexpro settings
-codexpro inspect
-codexpro review
+```json
+{
+  "action":"send",
+  "pool":"feature-team-...",
+  "agent":"coder",
+  "message":"Implement the bounded task and run focused tests.",
+  "wait_seconds":60
+}
 ```
 
-Useful modes:
+Actions: `start`, `send`, `wait`, `status`, `messages`, `checkpoint`, `stop`.
 
-```bash
-codexpro start --no-bash
-codexpro start --tool-mode minimal
-codexpro start --tool-mode full
-codexpro start --mode handoff
-codexpro start --mode pro
-codexpro start --headless
-```
+`send` waits in the same MCP call by default. `messages` without a message reads the shared forum; with a message it posts to one agent or the whole pool. Pools are globally indexed by pool id and route back to their bound allowed workspace after MCP reconnects.
 
-Opt-in tool cards:
-
-```bash
-CODEXPRO_TOOL_CARDS=1 codexpro start
-```
-
-## Public HTTPS options
-
-ChatGPT web needs HTTPS:
-
-```bash
-codexpro start --tunnel cloudflare          # quick demo URL (changes)
-codexpro ngrok --hostname your.ngrok-free.dev
-codexpro stable --hostname codexpro.example.com --tunnel-name codexpro
-codexpro tailscale --hostname your-device.your-tailnet.ts.net
-codexpro start --tunnel none                # local only
-```
-
-Keep a stable token for stable hostnames:
-
-```bash
-mkdir -p ~/.codexpro
-openssl rand -hex 32 > ~/.codexpro/http-token
-chmod 600 ~/.codexpro/http-token
-```
-
-Prefer `Authorization: Bearer <token>` when the client supports headers. The `?codexpro_token=` query form is a personal compatibility fallback.
-
-## Safety defaults
-
-- Public tunnels require a CodexPro HTTP token (min 24 bytes)
-- Writes stay hidden unless write mode is `workspace`
-- Safe bash is the default
-- Blocked paths cover `.env`, keys, `.git`, build caches, and similar
-- Attachment import only accepts ChatGPT Apps SDK file objects from approved HTTPS hosts
-
-Read [SECURITY.md](SECURITY.md) before exposing a tunnel.
-
-## Update
-
-```bash
-npm install -g codexpro@latest
-codexpro --version
-```
-
-Restart `codexpro start` after updating. Saved profiles under `~/.codexpro` stay in place.
-
-## Development
+## One endpoint, many projects
 
 ```bash
 npm install
 npm run build
-npm run smoke
-npm run stress
-npm run release:check
+
+AGENT_LOOM_HTTP_TOKEN='use-at-least-24-random-bytes' \
+node dist/http.js \
+  --root /projects/default \
+  --allow-root /projects/project-a \
+  --allow-root /projects/project-b
 ```
 
-Publish only from the CodexPro root:
+Connect every ChatGPT chat to:
+
+```text
+https://your-host.example/mcp?agent_loom_token=...
+```
+
+Each chat calls `workspace({"action":"use", ...})` independently. A workspace path is accepted only when it is under a configured allowed root.
+
+## h5i and Git layout
+
+Do **not** run `git init` in `$HOME`.
+
+A home-directory repository would make credentials, caches, configuration, downloads, and unrelated projects candidates for Git/h5i discovery. It also makes accidental staging or oversized h5i snapshots much more likely.
+
+Agent Loom uses:
+
+- the actual project repository for each h5i worktree and box;
+- `~/.agent-loom/` for private runtime metadata, keys, logs, and task state;
+- `<project>/.agent-loom/pools/` for reviewable non-secret pool metadata/checkpoints.
+
+If a Git-backed global control plane is needed later, initialize a dedicated repository such as `~/.local/share/agent-loom/control`, never `$HOME` itself. h5i worktrees still belong to their source project repositories.
+
+## Requirements
+
+- Node.js 20+
+- Git
+- h5i
+- tmux
+- Pi and/or Codex CLI with configured authentication
+
+## Development
 
 ```bash
-cd /path/to/codexpro
-npm run release:publish
+npm ci
+npm run build
+npm run smoke
 ```
 
-## Docs
+## Security
 
-- [Website](https://rebel0789.github.io/codexpro/)
-- [FAQ](FAQ.md)
-- [Security](SECURITY.md)
-- [Stable URL guide](DOMAIN_SETUP.md)
-- [Changelog](CHANGELOG.md)
-- [Contributors](CONTRIBUTORS.md)
+- One HTTP token gates the endpoint.
+- Workspace roots are allowlisted before routing.
+- Every agent receives a separate confined envelope key.
+- Forum posts coordinate work but do not grant sandbox capabilities.
+- h5i remains the execution boundary.
+
+See [SECURITY.md](SECURITY.md) and [docs/architecture.md](docs/architecture.md).
+
+## License
+
+MIT. Original CodexPro copyright and license notices are retained.

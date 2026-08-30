@@ -19,6 +19,7 @@ import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
+import { createAgentPool, runAgentTask, waitAgentTask, postAgentMessage, readAgentForum, agentPoolStatus, checkpointAgentWorker, stopAgentPool, resolveAgentPoolWorkspace } from "./agentPoolOps.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -219,7 +220,7 @@ function registerToolCardResource(server: McpServer, config: CodexProConfig): vo
 
 type CodexToolHandler = (args: any) => Promise<any> | any;
 
-const SUPERTOOL_NAME = "codexpro";
+const SUPERTOOL_NAME = "loom";
 const SUPERTOOL_ACTION_ALIASES: Record<string, string> = {
   actions: "list_actions",
   config: "server_config",
@@ -316,31 +317,23 @@ function registerToolCompat(
 }
 
 const MINIMAL_TOOL_NAMES = [
-  SUPERTOOL_NAME,
-  "server_config",
-  "codexpro_self_test",
-  "open_current_workspace",
-  "open_workspace",
+  "workspace",
+  "pi",
+  "codex",
   "read",
   "write",
   "edit",
   "apply_patch",
-  "import_file",
   "bash",
   "show_changes"
 ] as const;
 
 const STANDARD_TOOL_NAMES = [
   ...MINIMAL_TOOL_NAMES,
-  "inspect_workspace",
   "tree",
   "search",
-  "load_skill",
   "view_image",
-  "read_handoff",
-  "wait_for_handoff",
-  "export_pro_context",
-  "handoff_to_agent"
+  "import_file"
 ] as const;
 
 const FULL_TOOL_NAMES = [
@@ -371,7 +364,10 @@ const FULL_TOOL_NAMES = [
   "codex_context",
   "export_pro_context",
   "handoff_to_agent",
-  "handoff_to_codex"
+  "handoff_to_codex",
+  "workspace",
+  "pi",
+  "codex"
 ] as const;
 
 const CONNECTION_TEST_HIDDEN_TOOLS = new Set<string>([
@@ -485,11 +481,11 @@ function serverInstructions(config: CodexProConfig): string {
       : "5. Use bash only for meaningful verification commands such as npm test, npm run build, lint, typecheck, or an existing project script.";
 
   return [
-    "CodexPro connects ChatGPT to explicitly allowed local development workspaces.",
+    "Agent Loom connects ChatGPT to multiple explicitly allowed workspaces and persistent Pi/Codex agents through one MCP endpoint and token.",
     "",
     "Preferred workflow:",
-    "1. Start with open_current_workspace. Use open_workspace only when the user gives a different allowed root or asks to switch projects; that selection stays active for this MCP session.",
-    "2. Follow any AGENTS.md-style instructions returned by the workspace open call before editing files.",
+    "1. Start with workspace(action=list), then workspace(action=use) when this chat needs a different allowed project. Selection is isolated to this MCP session.",
+    "2. Read and follow the selected project's AGENTS.md/CLAUDE.md instructions before editing files.",
     "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
     editInstruction,
     bashInstruction,
@@ -926,11 +922,11 @@ const LOCAL_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, des
 const BASH_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true, destructiveHint: true, idempotentHint: false };
 const HANDOFF_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, destructiveHint: false, idempotentHint: false };
 
-export function createCodexProServer(config: CodexProConfig): McpServer {
+export function createAgentLoomServer(config: CodexProConfig): McpServer {
   const workspaces = new WorkspaceManager(config);
   const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
-  const server = new McpServer({ name: "CodexPro", version: "0.30.0" }, { instructions: serverInstructions(config) });
+  const server = new McpServer({ name: "Agent Loom", version: "0.1.0" }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
   registerToolCardResource(server, config);
 
@@ -2065,6 +2061,112 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...result, bash_session_id: result.bashSessionId ?? null });
     }
   );
+
+  registerCodexTool(
+    config,
+    server,
+    "workspace",
+    {
+      title: "Workspace Router",
+      description: "List, open, select, or inspect one of the allowed project workspaces. Selection belongs to this MCP session/chat; other chats may select different projects through the same endpoint and token.",
+      inputSchema: {
+        action: z.enum(["list", "open", "use", "current"]),
+        root: z.string().optional().describe("Allowed project root for action=open."),
+        workspace_id: z.string().optional().describe("Stable workspace id for action=use.")
+      },
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async (args) => {
+      if (args.action === "open") {
+        if (!args.root) throw new CodexProError("root is required for workspace action=open.");
+        const opened = workspaces.openWorkspace(args.root);
+        return textResult(`# Workspace Selected\n\n${opened.id} — ${opened.root}`, { workspace: opened, selected_workspace_id: opened.id });
+      }
+      if (args.action === "use") {
+        if (!args.workspace_id) throw new CodexProError("workspace_id is required for workspace action=use.");
+        const selected = workspaces.selectWorkspace(args.workspace_id);
+        return textResult(`# Workspace Selected\n\n${selected.id} — ${selected.root}`, { workspace: selected, selected_workspace_id: selected.id });
+      }
+      const selectedId = workspaces.currentWorkspaceId();
+      const available = workspaces.listWorkspaces();
+      if (args.action === "current") {
+        const current = workspaces.getWorkspace(selectedId);
+        return textResult(`# Current Workspace\n\n${current.id} — ${current.root}`, { workspace: current, selected_workspace_id: current.id });
+      }
+      const text = available.map((item) => `- ${item.id} — ${item.root}${item.id === selectedId ? " (selected)" : ""}`).join("\n");
+      return textResult(`# Workspaces\n\n${text}`, { workspaces: available, selected_workspace_id: selectedId });
+    }
+  );
+
+  const registerRuntimeTool = (runtime: "pi" | "codex") => registerCodexTool(
+    config,
+    server,
+    runtime,
+    {
+      title: runtime === "pi" ? "Pi Agents" : "Codex Agents",
+      description: `Unified persistent ${runtime} agent interface. Start once, then send many tasks to stable h5i boxes and conversation sessions. Pools survive MCP requests and route back to their bound workspace by id.`,
+      inputSchema: {
+        action: z.enum(["start", "send", "wait", "status", "messages", "checkpoint", "stop"]),
+        workspace_id: z.string().optional().describe("Workspace for action=start. Omit to use this chat's selected workspace."),
+        pool: z.string().optional().describe("Pool id. Required except for action=start."),
+        name: z.string().optional().describe("Pool name for action=start."),
+        agents: z.array(z.object({
+          id: z.string().optional(),
+          model: z.string().optional(),
+          role: z.enum(["dev", "reviewer"]).optional(),
+          thinking: z.enum(["low", "medium", "high"]).optional()
+        })).min(1).max(4).optional(),
+        agent: z.string().optional().describe("Agent id; send uses round-robin when omitted."),
+        message: z.string().optional().describe("Task or forum message."),
+        task: z.string().optional().describe("Pending task id for action=wait."),
+        wait_seconds: z.number().int().min(0).max(60).optional().describe("Wait in the same call. Default: 60."),
+        advance_baseline: z.boolean().optional(),
+        force: z.boolean().optional()
+      },
+      annotations: BASH_ANNOTATIONS
+    },
+    async (args) => {
+      if (args.action === "start") {
+        const workspace = workspaces.getWorkspace(args.workspace_id);
+        const result = await createAgentPool(workspace, { runtime, name: args.name, agents: args.agents, workers: args.agents?.length ?? 2, seed_dirty: true });
+        return textResult(`# ${runtime} Pool Started\n\nPool: ${result.pool_id}\nWorkspace: ${result.root}\nForum: ${result.forum_thread_id}`, result);
+      }
+      if (!args.pool) throw new CodexProError(`pool is required for ${runtime} action=${args.action}.`);
+      const route = await resolveAgentPoolWorkspace(args.pool);
+      if (route.runtime !== runtime) throw new CodexProError(`Pool ${args.pool} belongs to ${route.runtime}, not ${runtime}.`);
+      const workspace = workspaces.openWorkspace(route.root, { select: false });
+      if (args.action === "send") {
+        if (!args.message) throw new CodexProError("message is required for action=send.");
+        const result = await runAgentTask(workspace, { pool_id: args.pool, worker_id: args.agent, prompt: args.message, max_wait_seconds: args.wait_seconds ?? 60 });
+        return textResult(result.state === "completed" ? `# ${runtime} Result\n\nTask: ${result.task_id}\nStatus: ${result.status}\n\n${result.summary ?? ""}` : `# ${runtime} Task Pending\n\nTask: ${result.task_id}`, result);
+      }
+      if (args.action === "wait") {
+        if (!args.task) throw new CodexProError("task is required for action=wait.");
+        const result = await waitAgentTask(workspace, { pool_id: args.pool, task_id: args.task, max_wait_seconds: args.wait_seconds ?? 60 });
+        return textResult(result.state === "completed" ? `# ${runtime} Result\n\nStatus: ${result.status}\n\n${result.summary ?? ""}` : `# ${runtime} Task Pending\n\nTask: ${args.task}`, result);
+      }
+      if (args.action === "status") {
+        const result = await agentPoolStatus(workspace, { pool_id: args.pool });
+        return textResult(`# ${runtime} Pool Status\n\n${result.workers.map((worker: any) => `${worker.worker_id}: running=${worker.running} model=${worker.model} changes=${worker.changed_paths.length}`).join("\n")}`, result);
+      }
+      if (args.action === "messages") {
+        const result: any = args.message
+          ? await postAgentMessage(workspace, { pool_id: args.pool, worker_id: args.agent, message: args.message })
+          : await readAgentForum(workspace, { pool_id: args.pool });
+        return textResult(args.message ? `# Message Posted\n\nTo: ${result.worker_id ?? "all"}` : `# Agent Forum\n\n${result.text}`, result);
+      }
+      if (args.action === "checkpoint") {
+        if (!args.agent) throw new CodexProError("agent is required for action=checkpoint.");
+        const result = await checkpointAgentWorker(workspace, { pool_id: args.pool, worker_id: args.agent, advance_baseline: args.advance_baseline === true });
+        return textResult(`# Agent Checkpoint\n\nPatch: ${result.patch_path}\nBytes: ${result.patch_bytes}`, result);
+      }
+      const result = await stopAgentPool(workspace, { pool_id: args.pool, force: args.force === true });
+      return textResult(`# ${runtime} Pool Stop\n\nState: ${result.state}`, result);
+    }
+  );
+
+  registerRuntimeTool("pi");
+  registerRuntimeTool("codex");
 
   registerCodexTool(
     config,

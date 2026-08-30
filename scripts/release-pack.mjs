@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { CODEXPRO_PACKAGE, assertCodexProReleaseEnvironment } from "./release-guard.mjs";
+import { AGENT_LOOM_PACKAGE, assertAgentLoomReleaseEnvironment } from "./release-guard.mjs";
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmCli = process.env.npm_execpath;
@@ -9,7 +9,7 @@ function fail(message) {
 }
 
 try {
-  const release = assertCodexProReleaseEnvironment();
+  const release = assertAgentLoomReleaseEnvironment();
   const packArgs = ["pack", "--dry-run", "--ignore-scripts", "--json"];
   const packed = spawnSync(npmCli ? process.execPath : npm, npmCli ? [npmCli, ...packArgs] : packArgs, {
     cwd: release.root,
@@ -27,10 +27,10 @@ try {
     fail("npm pack did not return a JSON package manifest.");
   }
   const tarball = Array.isArray(packages) ? packages[0] : null;
-  if (!tarball || tarball.name !== CODEXPRO_PACKAGE || tarball.version !== release.version) {
-    fail(`Expected ${CODEXPRO_PACKAGE}@${release.version}; npm pack selected ${tarball?.name ?? "(missing)"}@${tarball?.version ?? "(missing)"}.`);
+  if (!tarball || tarball.name !== AGENT_LOOM_PACKAGE || tarball.version !== release.version) {
+    fail(`Expected ${AGENT_LOOM_PACKAGE}@${release.version}; npm pack selected ${tarball?.name ?? "(missing)"}@${tarball?.version ?? "(missing)"}.`);
   }
-  if (tarball.filename !== `${CODEXPRO_PACKAGE}-${release.version}.tgz`) {
+  if (tarball.filename !== `${AGENT_LOOM_PACKAGE}-${release.version}.tgz`) {
     fail(`Unexpected tarball filename: ${tarball.filename ?? "(missing)"}.`);
   }
   const forbiddenInternal = (tarball.files ?? [])

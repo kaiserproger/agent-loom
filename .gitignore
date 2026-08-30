@@ -5,6 +5,7 @@ dist/
 .env.*
 *.tgz
 .ai-bridge/
+.agent-loom/
 .hallmark/
 .playwright-cli/
 .worktrees/

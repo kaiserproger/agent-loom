@@ -428,7 +428,7 @@ async function runRedactionStress() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-stress-redact-'));
   const ngrokToken = '2redactDEFghiJKLmnopQRSTuvWXyz_1234567890';
   const cloudflareToken = 'eyJhbGciOiJIUzI1NiJ9.eyJ0dW5uZWwiOiJzdHJlc3MifQ.signature1234567890';
-  const tokenFile = '/Users/rebel/.codexpro/cloudflare-tunnel-token';
+  const tokenFile = '/home/example/.agent-loom/cloudflare-tunnel-token';
   await fs.writeFile(path.join(root, 'tokens.txt'), [
     `ngrok config add-authtoken ${ngrokToken}`,
     `cloudflared tunnel run --token ${cloudflareToken}`,

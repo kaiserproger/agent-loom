@@ -126,7 +126,14 @@ export class WorkspaceManager {
   }
 
   listWorkspaces(): Workspace[] {
+    for (const root of this.config.allowedRoots) this.openWorkspace(root, { select: false });
     return [...this.workspaces.values()];
+  }
+
+  selectWorkspace(id: string): Workspace {
+    const workspace = this.getWorkspace(id);
+    this.selectedWorkspaceId = workspace.id;
+    return workspace;
   }
 
   currentWorkspaceId(): string {

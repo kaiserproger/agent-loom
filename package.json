@@ -1,17 +1,17 @@
 {
-  "name": "codexpro",
-  "version": "0.30.0",
-  "description": "Local MCP server that connects ChatGPT Plugins to explicitly allowed repos on your machine.",
+  "name": "agent-loom",
+  "version": "0.1.0",
+  "description": "One MCP endpoint for multiple workspaces and persistent Pi/Codex agent pools in h5i.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rebel0789/codexpro.git"
+    "url": "git+https://github.com/kaiserproger/agent-loom.git"
   },
   "bugs": {
-    "url": "https://github.com/rebel0789/codexpro/issues"
+    "url": "https://github.com/kaiserproger/agent-loom/issues"
   },
-  "homepage": "https://rebel0789.github.io/codexpro/",
+  "homepage": "https://github.com/kaiserproger/agent-loom#readme",
   "contributors": [
     {
       "name": "yuczzzzz",
@@ -23,7 +23,9 @@
     "chatgpt",
     "codex",
     "apps-sdk",
-    "codexpro",
+    "agent-orchestration",
+    "pi",
+    "h5i",
     "local-development",
     "cloudflare-tunnel",
     "ngrok",
@@ -38,6 +40,7 @@
     "docs/zh.html",
     "docs/styles.css",
     "docs/script.js",
+    "docs/architecture.md",
     "docs/favicon.svg",
     "docs/og.svg",
     "docs/star.svg",
@@ -63,9 +66,9 @@
     "access": "public"
   },
   "bin": {
-    "codexpro": "scripts/codexpro.mjs",
-    "codexpro-mcp": "dist/stdio.js",
-    "codexpro-mcp-http": "dist/http.js"
+    "agent-loom": "scripts/agent-loom.mjs",
+    "agent-loom-mcp": "dist/stdio.js",
+    "agent-loom-mcp-http": "dist/http.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -76,19 +79,23 @@
     "start:http": "node dist/http.js",
     "dev:stdio": "tsx src/stdio.ts",
     "dev:http": "tsx src/http.ts",
-    "smoke": "node scripts/analysis-smoke.mjs && node scripts/analysis-cli-smoke.mjs && node scripts/smoke.mjs && node scripts/skill-precedence-smoke.mjs && node scripts/import-smoke.mjs && node scripts/http-smoke.mjs && node scripts/widget-smoke.mjs && node scripts/pro-smoke.mjs && node scripts/doctor-smoke.mjs && node scripts/settings-smoke.mjs && node scripts/execute-handoff-smoke.mjs && node scripts/release-guard-smoke.mjs",
+    "smoke": "npm run smoke:loom && node scripts/release-guard-smoke.mjs",
+    "smoke:legacy": "node scripts/analysis-smoke.mjs && node scripts/analysis-cli-smoke.mjs && node scripts/smoke.mjs && node scripts/skill-precedence-smoke.mjs && node scripts/import-smoke.mjs && node scripts/http-smoke.mjs && node scripts/widget-smoke.mjs && node scripts/pro-smoke.mjs && node scripts/doctor-smoke.mjs && node scripts/settings-smoke.mjs && node scripts/execute-handoff-smoke.mjs",
+    "smoke:loom": "npm run build && node scripts/loom-routing-smoke.mjs",
+    "smoke:pi": "npm run build && node scripts/agent-pool-smoke.mjs pi",
+    "smoke:codex": "npm run build && node scripts/agent-pool-smoke.mjs codex",
     "stress": "npm run build && node scripts/stress.mjs",
     "analysis:smoke": "npm run build && node scripts/analysis-smoke.mjs",
     "analysis:cli-smoke": "npm run build && node scripts/analysis-cli-smoke.mjs",
     "doctor": "node scripts/codexpro.mjs doctor",
-    "connect": "node scripts/codexpro.mjs",
-    "connect:setup": "node scripts/codexpro.mjs setup",
-    "connect:local": "node scripts/codexpro.mjs --tunnel none",
-    "connect:cloudflare": "node scripts/codexpro.mjs --tunnel cloudflare",
-    "connect:chatgpt": "node scripts/codexpro.mjs --tunnel cloudflare",
-    "connect:stable": "node scripts/codexpro.mjs --tunnel cloudflare-named",
-    "connect:ngrok": "node scripts/codexpro.mjs ngrok",
-    "connect:tailscale": "node scripts/codexpro.mjs tailscale",
+    "connect": "node scripts/agent-loom.mjs",
+    "connect:setup": "node scripts/agent-loom.mjs setup",
+    "connect:local": "node scripts/agent-loom.mjs --tunnel none",
+    "connect:cloudflare": "node scripts/agent-loom.mjs --tunnel cloudflare",
+    "connect:chatgpt": "node scripts/agent-loom.mjs --tunnel cloudflare",
+    "connect:stable": "node scripts/agent-loom.mjs --tunnel cloudflare-named",
+    "connect:ngrok": "node scripts/agent-loom.mjs ngrok",
+    "connect:tailscale": "node scripts/agent-loom.mjs tailscale",
     "pro:bundle": "node scripts/pro-bundle.mjs",
     "pro:apply": "node scripts/pro-apply.mjs",
     "release:guard": "node scripts/release-guard.mjs",
