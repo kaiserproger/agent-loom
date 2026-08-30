@@ -17,6 +17,17 @@ A host-owned supervisor recycles each dispatcher every 25 minutes, below h5i's r
 
 ## MCP interface
 
+### Direct ChatGPT workspace tools
+
+ChatGPT Web remains a first-class coding client; persistent subagents are optional. In the default `standard` mode it can directly use:
+
+- `read`, `write`, `edit`, and `apply_patch` for files;
+- `tree`, `search`, and `view_image` for inspection;
+- `bash` for workspace-scoped verification commands;
+- `show_changes` for Git status and diff review.
+
+Every tool accepts an explicit `workspace_id` or uses the workspace selected by this chat's MCP session. Default policy is `write=workspace` and `bash=safe`; trusted local deployments can opt into full Bash explicitly.
+
 ### `workspace`
 
 Each HTTP MCP connection has its own selected workspace. Different ChatGPT chats can therefore select different projects while sharing the same server URL and token.

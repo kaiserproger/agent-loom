@@ -112,8 +112,8 @@ function tagToolResult(result: any, name: string, options: Record<string, unknow
       ? structured
       : {};
   const tagged = {
-    codexpro_tool: name,
-    codexpro_title: options.title ?? name,
+    loom_tool: name,
+    loom_title: options.title ?? name,
     ...base
   };
   const meta = (options._meta as Record<string, unknown> | undefined) ?? {};

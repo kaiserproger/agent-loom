@@ -58,7 +58,8 @@ try {
   const b = await connect('chat-b');
   try {
     const tools = (await a.client.listTools()).tools.map(tool => tool.name);
-    for (const expected of ['workspace', 'pi', 'codex']) if (!tools.includes(expected)) throw new Error(`missing ${expected}`);
+    const requiredTools = ['workspace', 'pi', 'codex', 'read', 'write', 'edit', 'apply_patch', 'bash', 'tree', 'search', 'show_changes'];
+    for (const expected of requiredTools) if (!tools.includes(expected)) throw new Error(`missing ${expected}`);
     const listed = await call(a.client, 'workspace', { action: 'list' });
     const wsA = listed.workspaces.find(item => item.root === rootA);
     const wsB = listed.workspaces.find(item => item.root === rootB);
@@ -68,7 +69,12 @@ try {
     const currentA = await call(a.client, 'workspace', { action: 'current' });
     const currentB = await call(b.client, 'workspace', { action: 'current' });
     if (currentA.workspace.root !== rootA || currentB.workspace.root !== rootB) throw new Error('MCP session workspace selections leaked');
-    console.log(JSON.stringify({ tools: ['workspace', 'pi', 'codex'], chat_a: currentA.workspace.root, chat_b: currentB.workspace.root, same_endpoint: true }, null, 2));
+    await call(a.client, 'write', { path: 'chat-a.txt', content: 'before\n' });
+    const edited = await call(a.client, 'edit', { path: 'chat-a.txt', old_text: 'before', new_text: 'after' });
+    const read = await call(a.client, 'read', { path: 'chat-a.txt' });
+    const bash = await call(a.client, 'bash', { command: 'pwd' });
+    if (edited.replacements !== 1 || !read.text.includes('after') || bash.stdout.trim() !== rootA || bash.exitCode !== 0) throw new Error(`direct ChatGPT edit/bash tools failed: ${JSON.stringify({ edited, read, bash })}`);
+    console.log(JSON.stringify({ tools: requiredTools, chat_a: currentA.workspace.root, chat_b: currentB.workspace.root, same_endpoint: true, direct_edit: true, direct_bash: true }, null, 2));
   } finally {
     await a.client.close();
     await b.client.close();
