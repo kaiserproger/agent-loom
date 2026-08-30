@@ -19,7 +19,6 @@ import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
-import { createAgentPool, runAgentTask, waitAgentTask, postAgentMessage, readAgentForum, agentPoolStatus, refreshAgentWorker, checkpointAgentWorker, applyAgentCheckpoint, stopAgentPool, resolveAgentPoolWorkspace, availablePiModels } from "./agentPoolOps.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -325,8 +324,6 @@ function registerToolCompat(
 
 const MINIMAL_TOOL_NAMES = [
   "workspace",
-  "pi",
-  "codex",
   "read",
   "write",
   "edit",
@@ -372,9 +369,7 @@ const FULL_TOOL_NAMES = [
   "export_pro_context",
   "handoff_to_agent",
   "handoff_to_codex",
-  "workspace",
-  "pi",
-  "codex"
+  "workspace"
 ] as const;
 
 const CONNECTION_TEST_HIDDEN_TOOLS = new Set<string>([
@@ -2120,107 +2115,6 @@ export function createAgentLoomServer(config: CodexProConfig): McpServer {
     }
   );
 
-  const registerRuntimeTool = (runtime: "pi" | "codex") => registerCodexTool(
-    config,
-    server,
-    runtime,
-    {
-      title: runtime === "pi" ? "Pi Agents" : "Codex Agents",
-      description: `Interface to the repository's ONE canonical h5i agent pool. NEVER create a pool per chat or task: action=start is idempotent for a Git root and returns or extends the existing mixed Pi/Codex pool. Always reuse its pool_id. Before independent QA or review of newer host changes, use action=refresh with the reviewer agent: this replaces only that worker's stale box from the current host worktree while keeping the same canonical pool. Pi agents may choose any locally available Pi model/provider and fail over safely. For action=start, ALWAYS pass the explicit Git repository root. apply_checkpoint safely applies only a selected worker delta without commit/reset/stash/h5i merge.`,
-      inputSchema: {
-        action: z.enum(["models", "start", "send", "wait", "status", "messages", "refresh", "checkpoint", "apply_checkpoint", "stop"]),
-        root: z.string().optional().describe("Explicit Git repository root. Required for action=start so a reconnect cannot bind the pool to the default workspace."),
-        workspace_id: z.string().optional().describe("Optional opened workspace id; root remains required for action=start."),
-        pool: z.string().optional().describe("Pool id. Required except for action=start."),
-        name: z.string().optional().describe("Pool name for action=start."),
-        agents: z.array(z.object({
-          id: z.string().optional(),
-          model: z.string().optional().describe("Preferred model. Omit to let Agent Loom choose from locally available runtime models."),
-          models: z.array(z.string()).max(8).optional().describe("Optional ordered Pi model/provider candidates. Agent Loom also discovers local Pi models and fails over after invocation errors."),
-          role: z.enum(["dev", "reviewer"]).optional(),
-          thinking: z.enum(["low", "medium", "high"]).optional()
-        })).min(1).max(4).optional(),
-        agent: z.string().optional().describe("Agent id. Required for refresh/checkpoint/apply_checkpoint; send uses round-robin when omitted."),
-        message: z.string().optional().describe("Task or forum message."),
-        task: z.string().optional().describe("Pending task id for action=wait."),
-        checkpoint: z.string().optional().describe("Checkpoint id returned by action=checkpoint; required for action=apply_checkpoint."),
-        wait_seconds: z.number().int().min(0).max(60).optional().describe("Wait in the same call. Default: 60."),
-        advance_baseline: z.boolean().optional(),
-        force: z.boolean().optional()
-      },
-      annotations: BASH_ANNOTATIONS
-    },
-    async (args) => {
-      if (args.action === "models") {
-        if (runtime !== "pi") throw new CodexProError("action=models is available through the pi tool; Codex CLI does not expose an equivalent local model inventory.");
-        const models = availablePiModels();
-        return textResult(`# Available Pi Models\n\n${models.map((model) => `- ${model}`).join("\n")}\n\nChoose any suitable model/provider. If it fails, Agent Loom can continue the same task with another candidate in the canonical pool.`, { runtime, models });
-      }
-      if (args.action === "start") {
-        if (!args.root) throw new CodexProError(`root is required for ${runtime} action=start. Pass the explicit Git repository root from the user's request; do not rely on implicit workspace selection.`);
-        const workspace = workspaces.openWorkspace(args.root, { select: false });
-        const gitRoot = repositoryRoot(workspace);
-        if (!gitRoot || gitRoot !== path.resolve(workspace.root)) {
-          const repositories = workspaces.discoverRepositories(workspace.root, { maxDepth: 3, maxResults: 30 });
-          const candidates = repositories.length ? `\nDiscovered repositories:\n${repositories.map((repository) => `- ${repository.root}`).join("\n")}` : "";
-          throw new CodexProError(`Persistent ${runtime} pools require the selected workspace itself to be a Git repository root. Selected: ${workspace.root}${gitRoot ? `\nContaining Git root: ${gitRoot}` : ""}${candidates}\nOpen the intended repository with workspace action=open, then retry start.`);
-        }
-        const result = await createAgentPool(workspace, { runtime, name: args.name, agents: args.agents, workers: args.agents?.length ?? 2, seed_dirty: true });
-        return textResult(`# ${runtime} Pool Started\n\nPool: ${result.pool_id}\nWorkspace: ${result.root}\nForum: ${result.forum_thread_id}`, result);
-      }
-      if (!args.pool) throw new CodexProError(`pool is required for ${runtime} action=${args.action}.`);
-      const route = await resolveAgentPoolWorkspace(args.pool);
-      if (route.runtime !== runtime && route.runtime !== "mixed") throw new CodexProError(`Canonical pool ${args.pool} currently belongs to ${route.runtime}, not ${runtime}. Call ${runtime} action=start with the same root to add ${runtime} agents to that one pool.`);
-      const workspace = workspaces.openWorkspace(route.root, { select: false });
-      if (args.action === "send") {
-        if (!args.message) throw new CodexProError("message is required for action=send.");
-        const result = await runAgentTask(workspace, { pool_id: args.pool, worker_id: args.agent, runtime, prompt: args.message, max_wait_seconds: args.wait_seconds ?? 60 });
-        return textResult(result.state === "completed" ? `# ${runtime} Result\n\nTask: ${result.task_id}\nStatus: ${result.status}\n\n${result.summary ?? ""}` : `# ${runtime} Task Pending\n\nTask: ${result.task_id}`, result);
-      }
-      if (args.action === "wait") {
-        if (!args.task) throw new CodexProError("task is required for action=wait.");
-        const result = await waitAgentTask(workspace, { pool_id: args.pool, task_id: args.task, max_wait_seconds: args.wait_seconds ?? 60 });
-        return textResult(result.state === "completed" ? `# ${runtime} Result\n\nStatus: ${result.status}\n\n${result.summary ?? ""}` : `# ${runtime} Task Pending\n\nTask: ${args.task}`, result);
-      }
-      if (args.action === "status") {
-        const result = await agentPoolStatus(workspace, { pool_id: args.pool });
-        return textResult(`# Canonical Agent Pool Status\n\n${result.workers.map((worker: any) => `${worker.worker_id}: runtime=${worker.runtime} running=${worker.running} model=${worker.model} changes=${worker.changed_paths.length}`).join("\n")}\n\nReuse this pool_id; do not create another pool for this repository.`, result);
-      }
-      if (args.action === "messages") {
-        const result: any = args.message
-          ? await postAgentMessage(workspace, { pool_id: args.pool, worker_id: args.agent, message: args.message })
-          : await readAgentForum(workspace, { pool_id: args.pool });
-        return textResult(args.message ? `# Message Posted\n\nTo: ${result.worker_id ?? "all"}` : `# Agent Forum\n\n${result.text}`, result);
-      }
-      if (args.action === "refresh") {
-        if (!args.agent) throw new CodexProError("agent is required for action=refresh.");
-        const result = await refreshAgentWorker(workspace, { pool_id: args.pool, worker_id: args.agent, seed_dirty: true });
-        return textResult(`# Agent Snapshot Refreshed\n\nAgent: ${result.worker_id}\nCurrent host snapshot: ${result.baseline_commit}\nCanonical pool unchanged: ${result.pool_id}`, result);
-      }
-      if (args.action === "checkpoint") {
-        if (!args.agent) throw new CodexProError("agent is required for action=checkpoint.");
-        const result = await checkpointAgentWorker(workspace, { pool_id: args.pool, worker_id: args.agent, advance_baseline: args.advance_baseline === true });
-        return textResult(`# Agent Checkpoint\n\nPatch: ${result.patch_path}\nBytes: ${result.patch_bytes}`, result);
-      }
-      if (args.action === "apply_checkpoint") {
-        if (!args.agent) throw new CodexProError("agent is required for action=apply_checkpoint.");
-        if (!args.checkpoint) throw new CodexProError("checkpoint is required for action=apply_checkpoint.");
-        const result = await applyAgentCheckpoint(workspace, {
-          pool_id: args.pool,
-          worker_id: args.agent,
-          checkpoint_id: args.checkpoint,
-          write_allowed: config.writeMode === "workspace",
-          validate_path: (patchPath: string) => guard.resolve(workspace, patchPath, { forWrite: true })
-        });
-        return textResult(`# Agent Checkpoint Applied\n\nCheckpoint: ${result.checkpoint_id}\nState: ${result.state}\nAlready applied: ${result.already_applied}`, result);
-      }
-      const result = await stopAgentPool(workspace, { pool_id: args.pool, force: args.force === true });
-      return textResult(`# ${runtime} Pool Stop\n\nState: ${result.state}`, result);
-    }
-  );
-
-  registerRuntimeTool("pi");
-  registerRuntimeTool("codex");
 
   registerCodexTool(
     config,

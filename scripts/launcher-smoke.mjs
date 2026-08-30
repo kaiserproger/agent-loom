@@ -58,9 +58,10 @@ try {
   await client.connect(new StreamableHTTPClientTransport(new URL(endpoint)));
   const tools = (await client.listTools()).tools;
   const names = tools.map(tool => tool.name);
-  for (const name of ['workspace', 'pi', 'codex', 'read', 'write', 'edit', 'bash', 'loom', 'loom_inventory']) {
+  for (const name of ['workspace', 'read', 'write', 'edit', 'bash', 'loom', 'loom_inventory']) {
     if (!names.includes(name)) throw new Error(`launcher full mode omitted ${name}`);
   }
+  if (names.includes('pi') || names.includes('codex')) throw new Error('removed persistent-agent tools are still exposed');
   const bash = tools.find(tool => tool.name === 'bash');
   if (bash?._meta?.['openai/outputTemplate'] !== 'ui://widget/agent-loom-tool-card-v10.html') throw new Error('launcher tool cards are not enabled');
   console.log(JSON.stringify({ tool_mode: 'full', write: 'workspace', bash: 'full', transcript: 'full', codex_sessions: 'read', tool_cards: true }, null, 2));
